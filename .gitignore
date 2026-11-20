@@ -1,0 +1,8 @@
+bin/
+obj/
+/app/
+generated/
+.superpowers/
+.vs/
+*.user
+TestResults/

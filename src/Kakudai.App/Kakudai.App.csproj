@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Kakudai</AssemblyName>
+    <RootNamespace>Kakudai.App</RootNamespace>
+    <!-- The released version (tag vX.Y.Z); the update banner compares it with the latest release on GitHub. -->
+    <Version>2.0.0</Version>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>kakudai.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Kakudai.Core\Kakudai.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Same icon for the window (taskbar, Alt+Tab) as for the exe. Made by docs\logo\make-icon.ps1. -->
+    <EmbeddedResource Include="kakudai.ico" LogicalName="Kakudai.App.kakudai.ico" />
+  </ItemGroup>
+
+  <!-- The WebView2 package always references its WPF control too, which conflicts (MSB3277) with the WindowsBase
+       of a WinForms-only app. It is not used here. -->
+  <Target Name="RemoveWebView2Wpf" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.Wpf'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

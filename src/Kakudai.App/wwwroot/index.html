@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://kakudai.local https://kakudai-bg.local data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0b0c">
+  <title>Kakudai</title>
+  <link rel="preload" href="fonts/instrument-serif-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app" id="app">
+  <!-- Bannière : fond de la map, glisser = déplacer la fenêtre. -->
+  <header class="banner" id="banner">
+    <div class="art" id="art" data-art="none" aria-hidden="true">
+      <img class="art__img" alt="" decoding="async">
+      <img class="art__img" alt="" decoding="async">
+      <svg class="art__rings" viewBox="0 0 300 300" focusable="false">
+        <circle cx="150" cy="150" r="52" />
+        <circle cx="150" cy="150" r="96" />
+        <circle cx="150" cy="150" r="140" />
+      </svg>
+      <div class="art__shade"></div>
+    </div>
+
+    <div class="topbar">
+      <p class="brand" id="status" data-state="waiting">
+        <!-- Logo (docs/logo/logo.svg without its tile). -->
+        <svg class="brand__mark" viewBox="46 18 192 192" width="17" height="17" aria-hidden="true" focusable="false">
+          <circle class="brand__ring" cx="156" cy="100" r="76" />
+          <circle class="brand__note" cx="74" cy="184" r="26" />
+          <circle class="brand__circle" cx="156" cy="100" r="50" />
+        </svg>
+        <span class="brand__name">Kakudai</span>
+        <span class="visually-hidden" id="status-text">waiting for the game</span>
+      </p>
+      <div class="winbtns">
+        <button class="winbtn" id="win-min" type="button" title="Minimize" aria-label="Minimize">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false" shape-rendering="crispEdges">
+            <rect class="winbtn__fill" x="0" y="4.5" width="10" height="1" />
+          </svg>
+        </button>
+        <button class="winbtn winbtn--close" id="win-close" type="button" title="Close" aria-label="Close">
+          <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">
+            <path d="M0.5 0.5l9 9M9.5 0.5l-9 9" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="info">
+      <p class="notice" id="notice" hidden></p>
+      <p class="artist" id="artist"></p>
+      <h1 class="title" id="title">Pick a map in the game</h1>
+      <!-- Star rating de la diff que les réglages actuels généreraient ; celui de la map au survol. -->
+      <p class="diff" id="diff" hidden><span class="diff__name" id="diff-name"></span><span class="stars mono" id="stars"><span aria-hidden="true"><span id="stars-value">–</span>★</span><span class="visually-hidden" id="stars-text">Star rating unknown</span></span><span class="diff__by"> by <span id="mapper"></span></span></p>
+    </div>
+  </header>
+
+  <main class="panel">
+    <!-- Mise à jour : une release plus récente sur GitHub (vérifiée par le C# au lancement). -->
+    <div class="update" id="update" role="status" hidden>
+      <p class="update__text"><span id="update-text"></span> — <button class="update__link" id="update-download" type="button">Download</button></p>
+      <button class="update__close" id="update-close" type="button" title="Dismiss" aria-label="Dismiss">
+        <svg viewBox="0 0 10 10" width="8" height="8" aria-hidden="true" focusable="false">
+          <path d="M0.5 0.5l9 9M9.5 0.5l-9 9" />
+        </svg>
+      </button>
+    </div>
+
+    <section class="rows" aria-label="Settings">
+      <div class="row" id="row-factor">
+        <label class="row__label" for="factor">Spacing</label>
+        <input class="range" id="factor" type="range" min="1" max="3" step="0.05" value="1.5">
+        <output class="val mono" id="factor-val" for="factor">×1.50</output>
+      </div>
+
+      <!-- Ligne BPM : la barre règle le rate ; le rate en petit à côté du mot « BPM », valeur = BPM final (éditable). -->
+      <div class="row" id="row-rate">
+        <span class="row__label row__label--bpm">
+          <label for="bpm-field">BPM</label>
+          <span class="field field--rate" id="rate-wrap">
+            <input class="field__input mono" id="rate-field" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="Rate">
+            <span class="field__unit">x</span>
+          </span>
+        </span>
+        <input class="range" id="rate" type="range" min="0.5" max="2" step="0.01" value="1" aria-label="Rate">
+        <span class="val val--bpm">
+          <span class="field field--bpm" id="bpm-wrap">
+            <input class="field__input mono" id="bpm-field" type="text" inputmode="decimal" autocomplete="off" spellcheck="false">
+          </span>
+        </span>
+        <button class="lock" type="button" data-lock="bpm" aria-pressed="false" aria-label="Lock the BPM"></button>
+      </div>
+
+      <div class="row" data-stat="hp">
+        <label class="row__label" for="hp">HP</label>
+        <input class="range" id="hp" type="range" min="0" max="10" step="0.1" value="5">
+        <output class="val mono" for="hp"></output>
+        <button class="lock" type="button" data-lock="hp" aria-pressed="false" aria-label="Lock HP"></button>
+      </div>
+      <div class="row" data-stat="cs">
+        <label class="row__label" for="cs">CS</label>
+        <input class="range" id="cs" type="range" min="0" max="10" step="0.1" value="5">
+        <output class="val mono" for="cs"></output>
+        <button class="lock" type="button" data-lock="cs" aria-pressed="false" aria-label="Lock CS"></button>
+      </div>
+      <div class="row" data-stat="ar">
+        <label class="row__label" for="ar">AR</label>
+        <input class="range" id="ar" type="range" min="0" max="11" step="0.1" value="5">
+        <output class="val mono" for="ar"></output>
+        <button class="lock" type="button" data-lock="ar" aria-pressed="false" aria-label="Lock AR"></button>
+      </div>
+      <div class="row" data-stat="od">
+        <label class="row__label" for="od">OD</label>
+        <input class="range" id="od" type="range" min="0" max="11" step="0.1" value="5">
+        <output class="val mono" for="od"></output>
+        <button class="lock" type="button" data-lock="od" aria-pressed="false" aria-label="Lock OD"></button>
+      </div>
+    </section>
+
+    <div class="profiles" id="profiles" role="group" aria-label="Profiles"></div>
+
+    <!-- « More options » : panneau repliable juste au-dessus de Generate, état retenu d'un lancement à l'autre. -->
+    <button class="more" id="more" type="button" aria-expanded="false" aria-controls="options">
+      <svg class="more__chevron" viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" focusable="false">
+        <path d="M3.5 1.5 7 5l-3.5 3.5" />
+      </svg>
+      More options
+    </button>
+    <div class="options" id="options" hidden>
+      <div class="check check--flip">
+        <label class="check__label"><input type="checkbox" data-toggle="flipMap"><span>Flip map</span></label>
+        <div class="segmented" id="flip-mode" role="radiogroup" aria-label="Flip direction">
+          <button class="segmented__opt" type="button" role="radio" data-flip="vertical" aria-checked="true" title="Vertical: top ↔ bottom">V</button>
+          <button class="segmented__opt" type="button" role="radio" data-flip="horizontal" aria-checked="false" title="Horizontal: left ↔ right">H</button>
+          <button class="segmented__opt" type="button" role="radio" data-flip="both" aria-checked="false" title="Both directions">Both</button>
+        </div>
+      </div>
+      <label class="check"><input type="checkbox" data-toggle="emulateHr"><span>Emulate HR</span></label>
+      <label class="check"><input type="checkbox" data-toggle="scaleAr"><span>Scale AR</span></label>
+      <label class="check"><input type="checkbox" data-toggle="scaleOd"><span>Scale OD</span></label>
+      <label class="check"><input type="checkbox" data-toggle="crushStreams"><span>Crush streams</span></label>
+      <label class="check"><input type="checkbox" data-toggle="changePitch"><span>Change pitch</span></label>
+      <label class="check"><input type="checkbox" data-toggle="accentAngles"><span>Accent angles</span></label>
+      <label class="check"><input type="checkbox" data-toggle="kiaiOnly"><span>Kiai only</span></label>
+    </div>
+
+    <button class="generate" id="generate" type="button" disabled>
+      <svg class="generate__spin" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+        <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".25" />
+        <path d="M14 8a6 6 0 0 0-6-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+      </svg>
+      <span id="generate-text">Generate</span>
+    </button>
+    <p class="message" id="message" aria-live="polite"><span id="message-text"></span></p>
+  </main>
+</div>
+
+<template id="lock-icon">
+  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+    <path class="lock__open" d="M5.25 7.25V5a2.75 2.75 0 0 1 5.35-.9" />
+    <path class="lock__closed" d="M5.25 7.25V5a2.75 2.75 0 0 1 5.5 0v2.25" />
+    <rect x="3.25" y="7.25" width="9.5" height="6.75" rx="1.6" />
+  </svg>
+</template>
+
+<template id="profile-template">
+  <div class="profile">
+    <button class="profile__load mono" type="button"></button>
+    <input class="profile__rename" type="text" maxlength="24" autocomplete="off" spellcheck="false" hidden>
+    <div class="profile__actions">
+      <button class="link" type="button" data-act="save">Save</button>
+      <button class="link" type="button" data-act="rename">Rename</button>
+    </div>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

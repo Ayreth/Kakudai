@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- Rendered by make-icon.ps1: logo.svg at every icon size, side by side on a transparent page (4 px apart). -->
+<style>html, body { margin: 0; background: transparent; } img { position: absolute; top: 0; }</style>
+<script>
+  let x = 0;
+  for (const s of [16, 20, 24, 32, 40, 48, 64, 256, 512]) {
+    document.write(`<img src="logo.svg" width="${s}" height="${s}" style="left:${x}px">`);
+    x += s + 4;
+  }
+</script>

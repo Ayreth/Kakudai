@@ -1,0 +1,40 @@
+osu file format v14
+
+[General]
+AudioFilename: audio.mp3
+Mode: 3
+
+[Metadata]
+Title:Test Song
+TitleUnicode:Test Song
+Artist:Tester
+ArtistUnicode:Tester
+Creator:Mapper
+Version:Insane
+Source:
+Tags:test
+BeatmapID:123
+BeatmapSetID:456
+
+[Difficulty]
+HPDrainRate:5
+CircleSize:4
+OverallDifficulty:8
+ApproachRate:9
+SliderMultiplier:1.4
+SliderTickRate:1
+
+[Events]
+0,0,"bg.jpg",0,0
+
+[TimingPoints]
+1000,500,4,2,0,60,1,0
+
+[HitObjects]
+256,192,1000,1,0,0:0:0:0:
+306,192,1500,1,0,0:0:0:0:
+100,100,2000,2,0,L|200:100,1,100
+256,192,3000,12,0,4000,0:0:0:0:
+300,200,4500,1,0,0:0:0:0:
+320,200,4625,1,0,0:0:0:0:
+340,200,4750,1,0,0:0:0:0:

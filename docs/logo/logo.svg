@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Kakudai</title>
+  <!-- Kakudai (拡大, "enlarge"): a note moved further out and drawn bigger. Colours of the app: #0b0b0c, #ededef, #f06ba8. -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0b0b0c"/>
+  <rect x="9" y="9" width="238" height="238" rx="55" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="2"/>
+  <!-- approach ring, opening outwards -->
+  <circle cx="156" cy="100" r="76" fill="none" stroke="#f06ba8" stroke-opacity="0.5" stroke-width="8"/>
+  <!-- the note where it was -->
+  <circle cx="76" cy="182" r="26" fill="#ededef"/>
+  <!-- the same note, spaced out and enlarged: an osu! hit circle -->
+  <circle cx="156" cy="100" r="50" fill="#f06ba8" stroke="#ffffff" stroke-width="11"/>
+</svg>
