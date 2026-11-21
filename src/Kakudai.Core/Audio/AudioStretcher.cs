@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using ManagedBass;
 using ManagedBass.Fx;
 using ManagedBass.Mix;
-using NAudio.Lame;
+
 
 namespace Kakudai.Core.Audio;
 
@@ -69,7 +69,7 @@ public static class AudioStretcher
             string reason = ex switch
             {
                 FileNotFoundException or DirectoryNotFoundException => "file not found",
-                BassException => ex.Message,
+                BassException or LameException => ex.Message,
                 _ => $"{ex.GetType().Name} : {ex.Message}",
             };
             throw new IOException($"Could not convert the audio \"{Path.GetFileName(sourcePath)}\": {reason}.", ex);
@@ -190,11 +190,10 @@ public static class AudioStretcher
             int shiftFrames = (int)Math.Round(shiftMs * OutputRate / 1000);
 
             using var file = File.Create(mp3Path);
-            // WriteVBRTag: the LAME header that tells BASS the encoder delay, so the music starts at t = 0.
-            using var writer = new LameMP3FileWriter(file,
-                NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(OutputRate, OutputChannels),
-                new LameConfig { Preset = LAMEPreset.INSANE, WriteVBRTag = true });
+            // The LAME header tells BASS the encoder delay, so the music starts at t = 0.
+            using var writer = new LameEncoder(file, OutputRate, OutputChannels);
             WriteMusic(mixer, writer, shiftFrames);
+            writer.Finish();
         }
         finally
         {
@@ -206,11 +205,11 @@ public static class AudioStretcher
 
     /// <summary>Encodes everything the mixer gives, moved <paramref name="lateFrames"/> earlier: a late start is cut,
     /// an early one gets silence in front.</summary>
-    private static void WriteMusic(int mixer, Stream writer, int lateFrames)
+    private static void WriteMusic(int mixer, LameEncoder writer, int lateFrames)
     {
         var buffer = new float[OutputRate * OutputChannels / 4];
         if (lateFrames < 0)
-            writer.Write(MemoryMarshal.AsBytes(new float[-lateFrames * OutputChannels].AsSpan()));
+            writer.Write(new float[-lateFrames * OutputChannels]);
         int skip = Math.Max(lateFrames, 0) * OutputChannels;
         while (true)
         {
@@ -223,7 +222,7 @@ public static class AudioStretcher
             int dropped = Math.Min(skip, count);
             skip -= dropped;
             if (count > dropped)
-                writer.Write(MemoryMarshal.AsBytes(buffer.AsSpan(dropped, count - dropped)));
+                writer.Write(buffer.AsSpan(dropped, count - dropped));
         }
     }
 

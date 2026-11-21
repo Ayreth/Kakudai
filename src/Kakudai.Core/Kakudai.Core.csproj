@@ -4,6 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
   </PropertyGroup>
 
@@ -12,8 +13,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio.Lame" Version="2.1.0" />
     <PackageReference Include="ppy.osu.Game.Rulesets.Osu" Version="2026.1026.0" />
+  </ItemGroup>
+
+  <!-- LAME is called directly (Audio/Lame.cs). On Windows its DLL comes from NAudio.Lame, whose build targets copy
+       libmp3lame.32/64.dll next to the app; its managed wrapper is not used. Linux and macOS builds ship their own
+       libmp3lame (built by the release workflow) or use the system's. -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' or $(RuntimeIdentifier.StartsWith('win'))">
+    <PackageReference Include="NAudio.Lame" Version="2.1.0" ExcludeAssets="compile;runtime" />
   </ItemGroup>
 
 </Project>

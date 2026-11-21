@@ -9,10 +9,11 @@ using Kakudai.Core.Game;
 using Kakudai.Core.Library;
 using Kakudai.Core.Maps;
 using Kakudai.Core.Settings;
+using Kakudai.Core.Stable;
 using Kakudai.Core.Training;
 using Kakudai.Core.Updates;
 
-namespace Kakudai.App;
+namespace Kakudai.Host;
 
 /// <summary>
 /// Connects the page to the Core. Reads the page's messages and the game log, runs the work off the UI thread
@@ -26,7 +27,9 @@ namespace Kakudai.App;
 /// <item>page → C#: <c>ready</c>; <c>window {action: minimize|close|drag|height, value?}</c>;
 /// <c>settings {settings, mapId?}</c>; <c>profiles {profiles}</c>; <c>generate {mapId, settings}</c>;
 /// <c>openUpdate</c> (opens the page of the release announced by <c>update</c>).</item>
-/// <item>C# → page: <c>status {client, state}</c>; <c>map {id, artist, title, difficultyName, mapper, isKakudai,
+/// <item>C# → page: <c>status {client, state}</c> (client "lazer", "torii" or "stable"; state waiting, detected,
+/// notFound, unsupported, libraryError or denied — osu!stable runs but its memory cannot be read);
+/// <c>map {id, artist, title, difficultyName, mapper, isKakudai,
 /// background, base}</c>; <c>noMap</c>; <c>appSettings {current, profiles}</c>; <c>resolved {mapId, rate, bpm, hp,
 /// cs, ar, od, version, nothingToChange, maxArOd}</c>; <c>stars {mapId, settings, value, map}</c> (star rating of the
 /// difficulty these settings would generate, null if unknown, and of the map; 300 ms after the last settings
@@ -34,21 +37,27 @@ namespace Kakudai.App;
 /// <c>error {source, message}</c>.</item>
 /// </list>
 /// </remarks>
-internal sealed class Bridge : IDisposable
+public sealed class Bridge : IDisposable
 {
     /// <summary>
-    /// The page loads map backgrounds from here, followed by the file hash. Not under the page's own host:
-    /// WebView2 does not raise WebResourceRequested for a host mapped to a folder.
+    /// The Windows window's background address, followed by the file key. Not under the page's own host: WebView2
+    /// does not raise WebResourceRequested for a host mapped to a folder.
     /// </summary>
-    public const string BackgroundPrefix = "https://kakudai-bg.local/";
+    public const string DefaultBackgroundPrefix = "https://kakudai-bg.local/";
+
+    /// <summary>Where the page loads map backgrounds from, followed by the file key; the window serves them with
+    /// <see cref="TryGetBackground"/>.</summary>
+    public string BackgroundPrefix { get; init; } = DefaultBackgroundPrefix;
 
     private static readonly TimeSpan SaveDelay = TimeSpan.FromMilliseconds(500);
 
     /// <summary>The star rating is computed this long after the last settings change.</summary>
     private static readonly TimeSpan StarsDelay = TimeSpan.FromMilliseconds(300);
 
-    /// <summary>The running version: <c>&lt;Version&gt;</c> of the app's project.</summary>
-    private static readonly Version AppVersion = typeof(Bridge).Assembly.GetName().Version ?? new Version(0, 0, 0);
+    /// <summary>The running version: <c>&lt;Version&gt;</c> of the app's project (Kakudai.App or Kakudai.Desktop, the
+    /// entry assembly; not this library's).</summary>
+    private static readonly Version AppVersion =
+        (System.Reflection.Assembly.GetEntryAssembly() ?? typeof(Bridge).Assembly).GetName().Version ?? new Version(0, 0, 0);
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -59,11 +68,12 @@ internal sealed class Bridge : IDisposable
     private readonly OsuLibrary _library;
     private readonly KakudaiService _service;
     private readonly LogWatcher _watcher;
+    private readonly StableWatcher _stable;
     private readonly Action<string> _post;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    // Backgrounds of the maps sent to the page (hash → file name): only these files are served.
-    private readonly ConcurrentDictionary<string, string> _backgrounds = new(StringComparer.OrdinalIgnoreCase);
+    // Backgrounds of the maps sent to the page (key → file name and path): only these files are served.
+    private readonly ConcurrentDictionary<string, (string Filename, string Path)> _backgrounds = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly string _settingsPath;
     private readonly System.Threading.Timer _saveTimer;
@@ -78,10 +88,14 @@ internal sealed class Bridge : IDisposable
 
     // Newest request not yet handled; older ones are dropped (coalescing).
     private GameSelection? _nextSelection;
+    private StableSelection? _nextStable;
     private ResolveRequest? _nextResolve;
 
-    // Last map sent to the page, which keeps showing it until another one arrives. Only used under _gate.
+    // Last map sent to the page, which keeps showing it until another one arrives, the game it came from ("lazer",
+    // "torii", "stable") and, for osu!stable, the running game (the new map is handed to it). Only used under _gate.
     private Guid? _shownMapId;
+    private string? _shownClient;
+    private StableGame? _shownStable;
 
     // Star rating: computed off the work queue, so it never holds up "resolved" or "generate". At most one
     // computation runs and one request waits (the newest); a newer request cancels the running one. All under _starsLock.
@@ -108,17 +122,23 @@ internal sealed class Bridge : IDisposable
     public event Action<string>? WindowAction;
 
     /// <summary>The page asks for a window height, in CSS pixels (its content height). Raised on the UI thread.</summary>
-    public event Action<double>? HeightRequested;
+    public event Action<HeightRequest>? HeightRequested;
 
     /// <summary>The page has (re)loaded and was sent the current state. Raised on the UI thread.</summary>
     public event Action? PageReady;
 
+    /// <param name="dataDir">Lazer's (or Torii's) data folder read first, read only.</param>
+    /// <param name="lazerDataDirs">Every data folder a game may use (<see cref="OsuPaths.LazerDataDirs()"/>): the one
+    /// whose log was written last is followed, and its library read.</param>
     /// <param name="settingsPath">The settings file, normally <c>%LOCALAPPDATA%\Kakudai\settings.json</c>.</param>
-    public Bridge(string dataDir, string tempDir, string logsDir, string outputDir, string settingsPath, Action<string> post)
+    public Bridge(string dataDir, Func<IReadOnlyList<string>> lazerDataDirs, string tempDir, string outputDir, string settingsPath,
+        Action<string> post)
     {
         _library = new OsuLibrary(dataDir, tempDir);
         _service = new KakudaiService(_library, outputDir, Path.Combine(tempDir, "audio"));
-        _watcher = new LogWatcher(logsDir, TimeSpan.FromMilliseconds(250));
+        // Every possible data folder is watched: the game played is the one whose log moves, wherever its data is.
+        _watcher = new LogWatcher(lazerDataDirs, TimeSpan.FromMilliseconds(250));
+        _stable = new StableWatcher(TimeSpan.FromMilliseconds(300));
         _post = post;
         _settingsPath = settingsPath;
         _appSettings = SettingsStore.Load(settingsPath);
@@ -126,13 +146,14 @@ internal sealed class Bridge : IDisposable
         _starsTimer = new System.Threading.Timer(_ => OnStarsDue(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>Reads the game base once, then follows the game log.</summary>
+    /// <summary>Reads lazer's base once (if there is one), then follows lazer's log and osu!stable's memory.</summary>
     public void Start()
     {
-        // Queued first, so the watcher's first selection waits for it.
+        // Queued first, so the watchers' first selection waits for it.
         Enqueue("detect", () =>
         {
             _service.DeleteAudioTemps(); // before any encode: what is left is from an interrupted run
+            if (!File.Exists(Path.Combine(_library.DataDir, "client.realm"))) return; // no lazer here: osu!stable only, or not yet
             try
             {
                 EnsureLibrary();
@@ -144,6 +165,9 @@ internal sealed class Bridge : IDisposable
         });
         _watcher.SelectionChanged += OnSelectionChanged;
         _watcher.Start();
+        _stable.SelectionChanged += OnStableSelectionChanged;
+        _stable.StateChanged += OnStableStateChanged;
+        _stable.Start();
         _ = CheckForUpdateAsync();
     }
 
@@ -159,6 +183,7 @@ internal sealed class Bridge : IDisposable
             _starsTimer.Dispose();
         }
         _watcher.Dispose();
+        _stable.Dispose();
         _saveTimer.Dispose();
         _updates.Dispose();
         _shutdown.Dispose(); // the check took its token at start; a cancelled token stays usable
@@ -204,10 +229,10 @@ internal sealed class Bridge : IDisposable
     public bool TryGetBackground(string hash, [NotNullWhen(true)] out string? path, [NotNullWhen(true)] out string? contentType)
     {
         path = contentType = null;
-        if (!IsHash(hash) || !_backgrounds.TryGetValue(hash, out var filename)) return false;
+        if (!IsHash(hash) || !_backgrounds.TryGetValue(hash, out var background)) return false;
 
-        path = _library.FilePath(hash);
-        contentType = Path.GetExtension(filename).ToLowerInvariant() switch
+        path = background.Path;
+        contentType = Path.GetExtension(background.Filename).ToLowerInvariant() switch
         {
             ".jpg" or ".jpeg" => "image/jpeg",
             ".png" => "image/png",
@@ -237,9 +262,9 @@ internal sealed class Bridge : IDisposable
         switch (action)
         {
             case "height":
-                if (message.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Number
-                    && v.TryGetDouble(out var height) && double.IsFinite(height) && height > 0)
-                    HeightRequested?.Invoke(height);
+                if (ReadPositive(message, "value") is { } height)
+                    HeightRequested?.Invoke(new HeightRequest(height, ReadPositive(message, "viewport"),
+                        ReadPositive(message, "scale") ?? 1));
                 break;
             case "minimize" or "close" or "drag":
                 WindowAction?.Invoke(action);
@@ -335,13 +360,11 @@ internal sealed class Bridge : IDisposable
 
             var version = _service.Resolve(settings).Version; // the name Generate just wrote
 
-            try
+            // The game the map came from imports it (stable: osu!.exe again with the file; lazer: its .osz program or
+            // its IPC pipe).
+            if (GameImport.Open(path, _shownClient, _shownStable) is { } failure)
             {
-                using var _ = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-            }
-            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
-            {
-                PostError("generate", $"The .osz was created ({Path.GetFileName(path)}) but Windows could not open it: {ex.Message}");
+                PostError("generate", failure);
                 return;
             }
 
@@ -361,7 +384,7 @@ internal sealed class Bridge : IDisposable
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
             {
-                PostError("update", $"Windows could not open the download page: {ex.Message}");
+                PostError("update", $"The download page could not be opened: {ex.Message}");
             }
         });
     }
@@ -382,6 +405,8 @@ internal sealed class Bridge : IDisposable
 
         try
         {
+            // The map comes from the data folder whose log announced it (moved data, Torii, another install…).
+            if (selection.DataDir is { } dataDir && _library.UseDataDir(dataDir)) _libraryLoaded = false;
             EnsureLibrary();
             var map = _service.SelectByDisplay(selection.Display);
             if (map is null)
@@ -392,7 +417,7 @@ internal sealed class Bridge : IDisposable
             }
 
             SetStatus(selection.Client, "detected");
-            ShowMap(map);
+            ShowMap(map, selection.Client, null);
         }
         catch (UnsupportedMapException ex)
         {
@@ -413,6 +438,63 @@ internal sealed class Bridge : IDisposable
         }
     }
 
+    // Raised on a thread-pool thread: only queues the work.
+    private void OnStableSelectionChanged(StableSelection selection)
+    {
+        Volatile.Write(ref _nextStable, selection);
+        Enqueue("detect", ProcessStableSelection);
+    }
+
+    private void OnStableStateChanged(StableState state)
+    {
+        Enqueue("detect", () =>
+        {
+            var status = _status;
+            if (state == StableState.Denied) SetStatus("stable", "denied");
+            // osu!stable closed (or tosu stepped in): the "denied" line has nothing left to say.
+            else if (status is { Client: "stable", State: "denied" })
+                SetStatus(state == StableState.Reading ? "stable" : null, "waiting");
+        });
+    }
+
+    /// <summary>The map osu!stable selected, read from its folder in Songs (lazer's base is not involved).</summary>
+    private void ProcessStableSelection()
+    {
+        var selection = Interlocked.Exchange(ref _nextStable, null);
+        if (selection is null) return;
+
+        try
+        {
+            var entry = StableMaps.Load(selection, out var otherMode);
+            if (entry is null)
+            {
+                SetStatus("stable", otherMode ? "unsupported" : "notFound");
+                RestoreShownMap();
+                return;
+            }
+
+            var map = _service.SelectExternal(entry);
+            SetStatus("stable", "detected");
+            ShowMap(map, "stable", selection.Game);
+        }
+        catch (UnsupportedMapException ex)
+        {
+            SetStatus("stable", "detected");
+            PostError("detect", ex.Message);
+            RestoreShownMap();
+        }
+        catch (LibraryUnavailableException)
+        {
+            SetStatus("stable", "notFound");
+            RestoreShownMap();
+        }
+        catch
+        {
+            RestoreShownMap();
+            throw;
+        }
+    }
+
     // ------------------------------------------------------------------ work
 
     private void EnsureLibrary()
@@ -422,9 +504,11 @@ internal sealed class Bridge : IDisposable
         _libraryLoaded = true;
     }
 
-    private void ShowMap(MapInfo map)
+    private void ShowMap(MapInfo map, string? client, StableGame? stable)
     {
         _shownMapId = map.Id;
+        _shownClient = client;
+        _shownStable = stable;
         SendMap(map);
     }
 
@@ -623,9 +707,9 @@ internal sealed class Bridge : IDisposable
     private void SendMap(MapInfo map)
     {
         string? background = null;
-        if (map.BackgroundHash is { } hash && IsHash(hash))
+        if (map.BackgroundHash is { } hash && IsHash(hash) && map.BackgroundPath is { } path)
         {
-            _backgrounds[hash] = map.BackgroundFilename ?? "";
+            _backgrounds[hash] = (map.BackgroundFilename ?? "", path);
             background = BackgroundPrefix + hash;
         }
 
@@ -673,7 +757,7 @@ internal sealed class Bridge : IDisposable
     // ------------------------------------------------------------------ helpers
 
     /// <summary>Message for an error the page shows as is.</summary>
-    internal static string Describe(Exception ex) => ex switch
+    public static string Describe(Exception ex) => ex switch
     {
         LibraryUnavailableException => ex.Message, // already precise (database unreadable, no music, …)
         UnsupportedMapException => ex.Message, // already complete ("Unsupported map: …", "Nothing to change: …")
@@ -685,6 +769,10 @@ internal sealed class Bridge : IDisposable
     private static bool IsHash(string hash) => hash.Length is >= 2 and <= 128 && hash.All(char.IsAsciiHexDigit);
 
     private static bool IsMap(string mapId, MapInfo map) => Guid.TryParse(mapId, out var id) && id == map.Id;
+
+    private static double? ReadPositive(JsonElement message, string name) =>
+        message.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d)
+        && double.IsFinite(d) && d > 0 ? d : null;
 
     private static string? ReadString(JsonElement message, string name) =>
         message.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
@@ -705,3 +793,10 @@ internal sealed class Bridge : IDisposable
         }
     }
 }
+
+/// <summary>A window height asked by the page.</summary>
+/// <param name="Height">The page's content height, in CSS pixels.</param>
+/// <param name="Viewport">The page's visible height (innerHeight) when it asked, in CSS pixels: with a system title
+/// bar, the window's outer height minus this is the bar.</param>
+/// <param name="Scale">devicePixelRatio: device pixels per CSS pixel.</param>
+public sealed record HeightRequest(double Height, double? Viewport, double Scale);

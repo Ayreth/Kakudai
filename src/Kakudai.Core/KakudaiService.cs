@@ -11,8 +11,9 @@ using Kakudai.Core.Training;
 namespace Kakudai.Core;
 
 /// <summary>The selected map: what the banner shows, and the values the trainer starts from.</summary>
+/// <param name="BackgroundPath">The background file on disk (in the game's folder, read only).</param>
 public sealed record MapInfo(Guid Id, string Artist, string Title, string DifficultyName, string Mapper,
-    bool IsKakudai, string? BackgroundHash, string? BackgroundFilename, MapBase Base);
+    bool IsKakudai, string? BackgroundHash, string? BackgroundFilename, MapBase Base, string? BackgroundPath = null);
 
 /// <summary>Star ratings of a map and of the difficulty some settings would make of it.</summary>
 /// <param name="MapId">The map they were computed for.</param>
@@ -36,6 +37,9 @@ public sealed class KakudaiService
 
     private MapInfo? _current;
     private Selection? _selection;
+
+    // The last map selected from outside the library (osu!stable), so that Select(id) can find it again.
+    private BeatmapEntry? _external;
 
     /// <param name="MapStars">The map's own star rating, computed on first use.</param>
     private sealed record Selection(BeatmapEntry Entry, LoadedMap Map, MapBase Base, MapStarsCache MapStars);
@@ -107,6 +111,26 @@ public sealed class KakudaiService
     /// <summary>True if the game shows <paramref name="display"/> for a taiko, catch or mania difficulty.</summary>
     public bool IsOtherMode(string display) => _library.IsOtherMode(display);
 
+    /// <summary>
+    /// Selects a map that is not in lazer's library: one of osu!stable's Songs folder, with its files on disk
+    /// (<see cref="BeatmapEntry.OsuPath"/>, <see cref="NamedFile.Path"/>). Whatever happens, the previous selection is
+    /// dropped.
+    /// </summary>
+    /// <exception cref="LibraryUnavailableException">The map file cannot be read.</exception>
+    /// <exception cref="UnsupportedMapException">The map is not one Kakudai can amplify.</exception>
+    public MapInfo SelectExternal(BeatmapEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.OsuPath is null) throw new ArgumentException("The entry has no .osu path.", nameof(entry));
+        lock (_gate)
+        {
+            Clear();
+            var info = Load(entry);
+            _external = entry;
+            return info;
+        }
+    }
+
     /// <summary>Selects a map of the library by its ID. Whatever happens, the previous selection is dropped.</summary>
     /// <exception cref="KeyNotFoundException">No map of the library has this ID.</exception>
     /// <exception cref="LibraryUnavailableException">The map file cannot be read.</exception>
@@ -117,6 +141,7 @@ public sealed class KakudaiService
         {
             Clear();
             var entry = _library.Entries.FirstOrDefault(e => e.Id == id)
+                        ?? (_external?.Id == id ? _external : null)
                         ?? throw new KeyNotFoundException("Map not found in the library.");
             return Load(entry);
         }
@@ -171,7 +196,7 @@ public sealed class KakudaiService
             NewAudio? newAudio = null;
             if (retime)
             {
-                var source = _library.FilePath(audio!.Hash);
+                var source = PathOf(audio!);
                 if (!File.Exists(source))
                     throw new LibraryUnavailableException("The map's audio file is missing from the game folder.");
                 newAudio = new NewAudio(newAudioName!, AudioStretcher.Stretch(source, resolved.Rate, s.ChangePitch, _audioCacheDir));
@@ -181,7 +206,7 @@ public sealed class KakudaiService
             {
                 // A file without a valid hash cannot be found in the game folder anyway.
                 var files = SetFiles.ToInclude(entry, text).Where(f => f.Hash.Length >= 2).ToList();
-                return OszBuilder.Build(entry, text, resolved.Version, files, _library.FilePath, _outputDir, newAudio);
+                return OszBuilder.Build(entry, text, resolved.Version, files, hash => PathOf(entry, hash), _outputDir, newAudio);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -286,6 +311,13 @@ public sealed class KakudaiService
 
     private Selection Selected() => _selection ?? throw new InvalidOperationException("No map selected.");
 
+    /// <summary>Where a file of a set is: its own path (osu!stable), else lazer's <c>files/</c> folder.</summary>
+    private string PathOf(NamedFile file) => file.Path ?? _library.FilePath(file.Hash);
+
+    /// <summary>The file of <paramref name="entry"/> with this key.</summary>
+    private string PathOf(BeatmapEntry entry, string hash)
+        => entry.Files.FirstOrDefault(f => f.Path is not null && f.Hash == hash)?.Path ?? _library.FilePath(hash);
+
     /// <summary>Runs <paramref name="work"/>, turning any failure but a cancellation into an
     /// <see cref="UnsupportedMapException"/>.</summary>
     private static T Unsupported<T>(Func<T> work, string failure)
@@ -312,7 +344,7 @@ public sealed class KakudaiService
         string text;
         try
         {
-            text = ReadText(_library.FilePath(entry.OsuHash));
+            text = ReadText(entry.OsuPath ?? _library.FilePath(entry.OsuHash));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -329,8 +361,12 @@ public sealed class KakudaiService
             ? null
             : entry.Files.FirstOrDefault(f => string.Equals(f.Filename, entry.BackgroundFile, StringComparison.OrdinalIgnoreCase));
 
+        string? backgroundPath = null;
+        if (background is not null && (background.Path is not null || background.Hash.Length >= 2))
+            backgroundPath = PathOf(background);
+
         var info = new MapInfo(entry.Id, entry.Artist, entry.Title, entry.DifficultyName, entry.Mapper,
-            entry.IsKakudai, background?.Hash, background?.Filename, mapBase);
+            entry.IsKakudai, background?.Hash, background?.Filename, mapBase, backgroundPath);
 
         Volatile.Write(ref _selection, new Selection(entry, map, mapBase, new MapStarsCache(text)));
         Volatile.Write(ref _current, info);

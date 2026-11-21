@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- What both windows share (Kakudai.App on Windows, Kakudai.Desktop on Linux and macOS): the bridge between the
+       page of wwwroot and the Core, and the game watchers. No UI. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Kakudai.Host</RootNamespace>
+    <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Kakudai.Core\Kakudai.Core.csproj" />
+  </ItemGroup>
+
+</Project>

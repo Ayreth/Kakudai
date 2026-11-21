@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Kakudai
+Comment=Spaces out the osu! map you have selected
+Exec=@DIR@/Kakudai
+Icon=@DIR@/kakudai.png
+Terminal=false
+Categories=Game;
+StartupWMClass=Kakudai

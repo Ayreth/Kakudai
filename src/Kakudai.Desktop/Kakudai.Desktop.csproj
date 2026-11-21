@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Kakudai's window on Linux and macOS: the same page (Kakudai.App/wwwroot) and bridge as on Windows, in Photino
+       (WebKitGTK on Linux, WKWebView on macOS). It also runs on Windows (WebView2), which is handy to test it, but the
+       Windows release is Kakudai.App. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Kakudai</AssemblyName>
+    <RootNamespace>Kakudai.Desktop</RootNamespace>
+    <!-- The released version (tag vX.Y.Z), the same as Kakudai.App's: the update banner compares it with GitHub's. -->
+    <Version>2.1.0</Version>
+    <ApplicationIcon>..\Kakudai.App\kakudai.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
+    <!-- No console window when started from a Windows test build. -->
+    <OutputType Condition="$([MSBuild]::IsOSPlatform('Windows')) and '$(RuntimeIdentifier)' == ''">WinExe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Photino.NET" Version="4.0.16" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Kakudai.Host\Kakudai.Host.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\Kakudai.App\wwwroot\**" LinkBase="wwwroot" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="kakudai.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

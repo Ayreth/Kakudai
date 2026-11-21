@@ -110,11 +110,14 @@ public static class OszBuilder
         return string.Join('/', segments);
     }
 
+    /// <summary>
+    /// Replaces what Windows refuses in a file name, on every system: the .osz may be opened by a game on Windows or
+    /// under Wine, and the file names in it are the ones osu!stable writes to its Songs folder.
+    /// </summary>
     private static string Sanitize(string name)
     {
         var sb = new StringBuilder(name.Length);
-        var invalid = Path.GetInvalidFileNameChars();
-        foreach (var c in name) sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+        foreach (var c in name) sb.Append(c < 32 || "<>:\"/\\|?*".Contains(c) ? '_' : c);
         return sb.ToString();
     }
 }

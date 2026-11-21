@@ -7,7 +7,7 @@ public sealed class LibraryUnavailableException(string message, Exception? inner
 
 public sealed class OsuLibrary
 {
-    private readonly string _dataDir;
+    private string _dataDir;
     private readonly string _tempDir;
     private IReadOnlyList<BeatmapEntry> _entries = Array.Empty<BeatmapEntry>();
     private IReadOnlyList<BeatmapEntry> _otherModes = Array.Empty<BeatmapEntry>();
@@ -33,8 +33,30 @@ public sealed class OsuLibrary
         _entries = entries.ToList();
     }
 
-    public static string DefaultDataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "osu");
+    public static string DefaultDataDir => Path.Combine(Game.OsuPaths.UserDataRoot, "osu");
+
+    /// <summary>The game data folder read (client.realm, files/).</summary>
+    public string DataDir => Volatile.Read(ref _dataDir);
+
+    /// <summary>
+    /// Reads another data folder from now on (the game played is another one, or its data moved): what was read from
+    /// the previous one is dropped, <see cref="Refresh"/> has to run again. False if it is already this folder.
+    /// </summary>
+    public bool UseDataDir(string dataDir)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(dataDir);
+        lock (_gate)
+        {
+            if (string.Equals(Path.GetFullPath(dataDir), Path.GetFullPath(_dataDir),
+                    OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase))
+                return false;
+            Volatile.Write(ref _dataDir, dataDir);
+            Volatile.Write(ref _entries, Array.Empty<BeatmapEntry>());
+            Volatile.Write(ref _otherModes, Array.Empty<BeatmapEntry>());
+            _copyPath = null;
+            return true;
+        }
+    }
 
     /// <summary>The osu!standard difficulties of the game base (the only ones Kakudai can amplify).</summary>
     public IReadOnlyList<BeatmapEntry> Entries => Volatile.Read(ref _entries);

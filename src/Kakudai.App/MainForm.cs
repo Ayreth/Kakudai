@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
-using Kakudai.Core.Library;
+using Kakudai.Core.Game;
+using Kakudai.Host;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -62,13 +63,13 @@ internal sealed class MainForm : Form
         Controls.Add(_web);
         ResumeLayout(false);
 
-        var dataDir = OsuLibrary.DefaultDataDir; // read only: nothing is ever written there
+        var dataDir = OsuPaths.ActiveLazerDataDir(); // read only: nothing is ever written there
         _bridge = new Bridge(
             dataDir,
-            Path.Combine(Path.GetTempPath(), "Kakudai"),
-            Path.Combine(dataDir, "logs"),
-            Path.Combine(AppContext.BaseDirectory, "generated"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kakudai", "settings.json"),
+            OsuPaths.LazerDataDirs,
+            OsuPaths.TempDir,
+            OsuPaths.GeneratedDir,
+            Path.Combine(OsuPaths.KakudaiDataDir, "settings.json"),
             PostToPage);
         _bridge.WindowAction += OnWindowAction;
         _bridge.HeightRequested += OnHeightRequested;
@@ -262,7 +263,7 @@ internal sealed class MainForm : Form
             CoreWebView2HostResourceAccessKind.Allow);
         // WebResourceRequested is never raised for a folder-mapped host (WebView2 157), so the backgrounds
         // have a host of their own.
-        core.AddWebResourceRequestedFilter(Bridge.BackgroundPrefix + "*", CoreWebView2WebResourceContext.All);
+        core.AddWebResourceRequestedFilter(Bridge.DefaultBackgroundPrefix + "*", CoreWebView2WebResourceContext.All);
         core.WebResourceRequested += OnWebResourceRequested;
         core.WebMessageReceived += (_, e) => _bridge.HandleMessage(e.WebMessageAsJson);
 
@@ -436,9 +437,10 @@ internal sealed class MainForm : Form
     }
 
     /// <summary>The page asks for its own height, in CSS px, when its content grows or shrinks. UI thread.</summary>
-    private void OnHeightRequested(double logicalHeight)
+    private void OnHeightRequested(HeightRequest request)
     {
-        _logicalHeight = logicalHeight;
+        // No title bar here: the page is the whole window, its content height is the window's.
+        _logicalHeight = request.Height;
         if (WindowState == FormWindowState.Minimized) _sizePending = true;
         else ApplySize();
     }

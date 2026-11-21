@@ -3,7 +3,9 @@ using System.Text;
 namespace Kakudai.Core.Game;
 
 /// <summary>Selected map as announced by the game log. Client is "torii" or "lazer".</summary>
-public sealed record GameSelection(string Client, string Display);
+/// <param name="DataDir">The game's data folder: the one holding the log, and with it client.realm and files/ (the
+/// game writes its logs where its data is, wherever it was moved). Null when the watcher follows a single folder.</param>
+public sealed record GameSelection(string Client, string Display, string? DataDir = null);
 
 public static class GameLog
 {
@@ -23,10 +25,20 @@ public static class GameLog
         headerLine.Contains("torii", StringComparison.OrdinalIgnoreCase) ? "torii" : "lazer";
 }
 
-/// <summary>Follows the most recent *.runtime.log of the game and raises an event when the selected map changes.</summary>
+/// <summary>
+/// Follows the most recent *.runtime.log of the game and raises an event when the selected map changes. Given the
+/// game's possible data folders, it follows whichever one's log was written last: the game being played, wherever its
+/// data lives.
+/// </summary>
 public sealed class LogWatcher : IDisposable
 {
-    private readonly string _dir;
+    /// <summary>How often the list of data folders is asked again (it may look at running processes).</summary>
+    private static readonly TimeSpan DataDirsRefresh = TimeSpan.FromSeconds(5);
+
+    private readonly string? _dir;
+    private readonly Func<IReadOnlyList<string>>? _dataDirs;
+    private IReadOnlyList<string> _logDirs = [];
+    private DateTime _logDirsAt = DateTime.MinValue;
     private readonly TimeSpan _interval;
     private readonly object _gate = new();
     private Timer? _timer;
@@ -41,11 +53,47 @@ public sealed class LogWatcher : IDisposable
 
     public event Action<GameSelection>? SelectionChanged;
 
+    /// <summary>Follows the logs of one folder; the selections it raises have no <see cref="GameSelection.DataDir"/>.</summary>
     public LogWatcher(string logsDir, TimeSpan pollInterval)
     {
         _dir = logsDir;
         _interval = pollInterval;
     }
+
+    /// <summary>Follows the <c>logs</c> folders of <paramref name="dataDirs"/> (asked again every few seconds).</summary>
+    public LogWatcher(Func<IReadOnlyList<string>> dataDirs, TimeSpan pollInterval)
+    {
+        _dataDirs = dataDirs;
+        _interval = pollInterval;
+    }
+
+    /// <summary>The newest runtime log of the folders followed, or null.</summary>
+    private FileInfo? NewestLog()
+    {
+        if (_dir is not null)
+            return Directory.Exists(_dir) ? Newest(new DirectoryInfo(_dir)) : null;
+
+        if (DateTime.UtcNow - _logDirsAt > DataDirsRefresh)
+        {
+            _logDirsAt = DateTime.UtcNow;
+            try
+            {
+                _logDirs = _dataDirs!().Select(d => Path.Combine(d, "logs")).ToList();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+        return _logDirs.Where(Directory.Exists).Select(d => Newest(new DirectoryInfo(d)))
+            .Where(f => f is not null)
+            .OrderByDescending(f => f!.LastWriteTimeUtc)
+            .FirstOrDefault();
+    }
+
+    private static FileInfo? Newest(DirectoryInfo dir) => dir.EnumerateFiles("*.runtime.log")
+        .OrderByDescending(f => f.LastWriteTimeUtc)
+        .ThenByDescending(f => f.Name, StringComparer.Ordinal)
+        .FirstOrDefault();
 
     public void Start()
     {
@@ -88,12 +136,10 @@ public sealed class LogWatcher : IDisposable
 
     private List<GameSelection> PollCore()
     {
-        if (!Directory.Exists(_dir)) return new List<GameSelection>();
-        var newest = new DirectoryInfo(_dir).EnumerateFiles("*.runtime.log")
-            .OrderByDescending(f => f.LastWriteTimeUtc)
-            .ThenByDescending(f => f.Name, StringComparer.Ordinal)
-            .FirstOrDefault();
+        var newest = NewestLog();
         if (newest == null) return new List<GameSelection>();
+        // logs/ sits in the data folder (a single-folder watcher leaves it unsaid).
+        var dataDir = _dir is null ? newest.Directory?.Parent?.FullName : null;
 
         var firstScan = false;
         if (!string.Equals(newest.FullName, _path, StringComparison.OrdinalIgnoreCase))
@@ -136,7 +182,7 @@ public sealed class LogWatcher : IDisposable
         if (firstScan) selections = new List<string> { selections[^1] };
         foreach (var display in selections)
         {
-            var gs = new GameSelection(_client, display);
+            var gs = new GameSelection(_client, display, dataDir);
             if (gs == _last) continue;
             _last = gs;
             result.Add(gs);

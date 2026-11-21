@@ -1,12 +1,15 @@
 // Kakudai — logique de l'interface (fenêtre compacte façon osu trainer).
-// Parle au C# par window.chrome.webview (WebView2). Protocole (camelCase) :
+// Parle au C# par window.chrome.webview (WebView2, Windows) ou window.external (Photino, Linux et macOS).
+// Protocole (camelCase) :
 //   JS → C# : {type:"ready"}
 //             {type:"settings", settings, mapId?}     à chaque changement ; C# répond "resolved" pour la map
 //             {type:"profiles", profiles}             4 emplacements {name, settings|null}
 //             {type:"generate", mapId, settings}
-//             {type:"window", action, value?}         action ∈ minimize|close|drag|height (value en px CSS)
+//             {type:"window", action, value?}         action ∈ minimize|close|drag|height (value en px CSS ;
+//                                                     height porte aussi viewport = innerHeight et scale)
 //             {type:"openUpdate"}                     ouvre la page de la release annoncée (le C# a l'adresse)
-//   C# → JS : {type:"status", client, state}          state ∈ waiting|detected|notFound|unsupported|libraryError
+//   C# → JS : {type:"status", client, state}          state ∈ waiting|detected|notFound|unsupported|libraryError|denied
+//                                                     client ∈ lazer|torii|stable
 //             {type:"appSettings", current, profiles} après "ready"
 //             {type:"map", id, artist, title, difficultyName, mapper, isKakudai, background, base}   (isKakudai : ignoré)
 //             {type:"noMap"}
@@ -50,6 +53,7 @@
     notFound: 'the game’s map was not found',
     unsupported: 'unsupported mode (osu!standard only)',
     libraryError: 'can’t read the game’s database, retrying shortly',
+    denied: 'can’t read osu!stable’s memory (see the README)',
   };
 
   const $ = (id) => document.getElementById(id);
@@ -886,15 +890,19 @@
   // (ou qu'un long message d'erreur passe sur deux lignes). Mesurée après chaque rendu, et par le ResizeObserver
   // pour ce qui change sans rendu (chargement des polices) ; le ResizeObserver seul ne suffit pas, il attend
   // une image et la page n'en dessine pas tant que la fenêtre est cachée.
+  // Avec la barre de titre du système (Linux, macOS), le C# ne connaît que la taille extérieure de la fenêtre : la
+  // page lui donne aussi la hauteur visible (viewport) et l'échelle, il en déduit la barre et corrige. Quand la
+  // fenêtre change de taille, la hauteur est renvoyée pour qu'il vérifie.
   let sentHeight = 0;
-  function reportHeight() {
+  function reportHeight(force) {
     const h = Math.ceil(el.app.getBoundingClientRect().height);
-    if (h > 0 && h !== sentHeight) {
+    if (h > 0 && (h !== sentHeight || force === true)) {
       sentHeight = h;
-      windowAction('height', h);
+      send({ type: 'window', action: 'height', value: h, viewport: window.innerHeight, scale: window.devicePixelRatio || 1 });
     }
   }
   new ResizeObserver(reportHeight).observe(el.app);
+  window.addEventListener('resize', () => reportHeight(true));
 
   // La largeur du titre dépend de la police : on la remesure quand Instrument Serif est chargée.
   if (document.fonts) {
@@ -915,7 +923,27 @@
     send({ type: 'ready' });
   }
 
-  const host = window.chrome && window.chrome.webview;
+  // Fenêtre Linux / macOS (Photino) : barre de titre du système, les boutons de la page sont masqués.
+  if (new URLSearchParams(location.search).get('chrome') === 'native') document.documentElement.dataset.chrome = 'native';
+
+  // Photino (Linux, macOS) : window.external.sendMessage / receiveMessage, des chaînes JSON.
+  function photinoBridge(ext) {
+    const listeners = [];
+    ext.receiveMessage((text) => {
+      let data;
+      try { data = JSON.parse(text); } catch { return; }
+      for (const fn of listeners) fn({ data });
+    });
+    return {
+      postMessage: (msg) => ext.sendMessage(JSON.stringify(msg)),
+      addEventListener: (_type, fn) => { listeners.push(fn); },
+    };
+  }
+
+  const ext = window.external;
+  const host = ext && typeof ext.sendMessage === 'function' && typeof ext.receiveMessage === 'function'
+    ? photinoBridge(ext)
+    : window.chrome && window.chrome.webview;
   if (host) {
     start(host);
   } else {

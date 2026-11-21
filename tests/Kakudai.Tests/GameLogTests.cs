@@ -172,4 +172,30 @@ public class GameLogTests
             Assert.That(got[1].Display, Is.EqualTo("B - b (m) [y]"));
         }
     }
+
+    [Test]
+    public void Watcher_FollowsTheDataFolderWhoseLogMoves()
+    {
+        // The default folder kept an old log; the game's data (and so its logs) was moved elsewhere.
+        var defaultDir = Path.Combine(_dir, "osu");
+        var movedDir = Path.Combine(_dir, "D", "osu-data");
+        Directory.CreateDirectory(Path.Combine(defaultDir, "logs"));
+        Directory.CreateDirectory(Path.Combine(movedDir, "logs"));
+        var old = Path.Combine(defaultDir, "logs", "1.runtime.log");
+        File.WriteAllText(old, Header("Running osu! 2026.1013.0-lazer") + Sel("Old - o (m) [a]"));
+        File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-30));
+        var moved = Path.Combine(movedDir, "logs", "2.runtime.log");
+        File.WriteAllText(moved, Header("Running osu! 2026.1117.0-lazer"));
+
+        using var w = new LogWatcher(() => [defaultDir, movedDir], TimeSpan.FromMilliseconds(50));
+        var got = new List<GameSelection>();
+        var sig = new SemaphoreSlim(0);
+        w.SelectionChanged += s => { lock (got) got.Add(s); sig.Release(); };
+        w.Start();
+
+        Append(moved, Sel("New - n (m) [b]"));
+        Assert.That(sig.Wait(Timeout), Is.True);
+        lock (got)
+            Assert.That(got.Last(), Is.EqualTo(new GameSelection("lazer", "New - n (m) [b]", Path.GetFullPath(movedDir))));
+    }
 }

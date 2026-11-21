@@ -231,6 +231,8 @@ body::after {
 
 /* Réduire / fermer : 40 × 32 px, glyphes de 10 px, comme Windows 11. */
 .winbtns { display: flex; flex: none; }
+/* Linux, macOS : la fenêtre a la barre de titre du système, la page n'a pas ses propres boutons. */
+[data-chrome="native"] .winbtns { visibility: hidden; }
 .winbtn {
   display: grid;
   place-items: center;

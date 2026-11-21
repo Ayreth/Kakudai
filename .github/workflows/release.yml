@@ -1,0 +1,138 @@
+# Tests on the three systems, then, for a tag vX.Y.Z (or by hand), the release files:
+#   Kakudai-win-x64.zip      Kakudai.App (WinForms + WebView2), .NET included
+#   Kakudai-linux-x64.tar.gz Kakudai.Desktop (Photino, WebKitGTK), .NET and libmp3lame included
+#   Kakudai-macos-arm64.zip  Kakudai.app for Apple Silicon, ad-hoc signed, .NET and libmp3lame included
+#   Kakudai-macos-x64.zip    the same for Intel Macs
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_NOLOGO: true
+  LAME_URL: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+  LAME_SHA256: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: LAME for the audio tests (Linux, macOS)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libmp3lame0
+      - if: runner.os == 'macOS'
+        run: brew install lame
+      - run: dotnet test tests/Kakudai.Tests -c Release
+
+  windows:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: dotnet publish src/Kakudai.App -c Release -r win-x64 --self-contained true -o out/Kakudai
+      - run: Compress-Archive -Path out/Kakudai/* -DestinationPath Kakudai-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Kakudai-win-x64.zip
+
+  linux:
+    needs: test
+    if: github.event_name != 'pull_request'
+    # The oldest supported runner: the glibc it builds against is the oldest Kakudai runs on.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build libmp3lame
+        run: |
+          curl -sL -o lame.tar.gz "$LAME_URL"
+          echo "$LAME_SHA256  lame.tar.gz" | sha256sum -c -
+          tar xzf lame.tar.gz
+          cd lame-3.100
+          ./configure --disable-frontend --disable-static --enable-shared --prefix="$PWD/install"
+          make -j"$(nproc)" && make install
+      - run: dotnet publish src/Kakudai.Desktop -c Release -r linux-x64 --self-contained true -o out/Kakudai
+      - name: Pack
+        run: |
+          cp -L lame-3.100/install/lib/libmp3lame.so.0 out/Kakudai/
+          cp packaging/linux/kakudai.desktop packaging/linux/install.sh out/Kakudai/
+          chmod +x out/Kakudai/Kakudai out/Kakudai/install.sh
+          tar czf Kakudai-linux-x64.tar.gz -C out Kakudai
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: Kakudai-linux-x64.tar.gz
+
+  macos:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: macos-14
+    strategy:
+      matrix:
+        rid: [osx-arm64, osx-x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build libmp3lame (universal)
+        run: |
+          curl -sL -o lame.tar.gz "$LAME_URL"
+          echo "$LAME_SHA256  lame.tar.gz" | shasum -a 256 -c -
+          tar xzf lame.tar.gz
+          cd lame-3.100
+          # 3.100 exports a symbol that no longer exists; the macOS linker refuses it.
+          sed -i '' '/lame_init_old/d' include/libmp3lame.sym
+          CC="clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0" ./configure --disable-frontend --disable-static \
+            --enable-shared --disable-dependency-tracking --prefix="$PWD/install"
+          make -j"$(sysctl -n hw.ncpu)" && make install
+      - run: dotnet publish src/Kakudai.Desktop -c Release -r ${{ matrix.rid }} --self-contained true -o out/publish
+      - name: Kakudai.app
+        run: |
+          VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Kakudai.Desktop/Kakudai.Desktop.csproj)
+          cp lame-3.100/install/lib/libmp3lame.0.dylib out/publish/
+          packaging/macos/make-app.sh out/publish "$VERSION" out/Kakudai.app
+          ditto -c -k --keepParent out/Kakudai.app "Kakudai-macos-${{ matrix.rid == 'osx-arm64' && 'arm64' || 'x64' }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.rid }}
+          path: Kakudai-macos-*.zip
+
+  release:
+    needs: [windows, linux, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" dist/* -R "$GITHUB_REPOSITORY" --clobber
