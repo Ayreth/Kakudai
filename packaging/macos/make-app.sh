@@ -26,4 +26,10 @@ iconutil -c icns "$iconset" -o "$app/Contents/Resources/kakudai.icns"
 
 sed "s/@VERSION@/$version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 
-codesign --force --deep --sign - "$app"
+# Every file first (the managed .dll too: the bundle's seal covers them), then the bundle. Not the executable on its
+# own: signing it seals the bundle, which needs every other file signed already.
+find "$app/Contents/MacOS" -type f ! -path "$app/Contents/MacOS/Kakudai" | while read -r file; do
+  codesign --force --timestamp=none --sign - "$file"
+done
+codesign --force --timestamp=none --sign - "$app"
+codesign --verify --deep --verbose=2 "$app"

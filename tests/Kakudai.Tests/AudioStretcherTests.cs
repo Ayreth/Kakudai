@@ -139,7 +139,9 @@ public class AudioStretcherTests
             AudioStretcher.DeleteTemps(_cache);
 
         Assert.That(File.Exists(temp), Is.False);
-        Assert.That(File.Exists(inUse), Is.True, "a file in use is left alone");
+        // Only Windows refuses to delete an open file; elsewhere an encode would keep writing to its own unlinked copy.
+        if (OperatingSystem.IsWindows())
+            Assert.That(File.Exists(inUse), Is.True, "a file in use is left alone");
         Assert.That(File.Exists(song), Is.True);
         Assert.DoesNotThrow(() => AudioStretcher.DeleteTemps(Path.Combine(_dir, "no cache yet")));
     }
