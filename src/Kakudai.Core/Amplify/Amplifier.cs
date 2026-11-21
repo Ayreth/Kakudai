@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using Kakudai.Core.Maps;
 
 namespace Kakudai.Core.Amplify;
@@ -28,9 +30,11 @@ public sealed record AmplifyResult(IReadOnlyList<Placement> Placements, int Corr
 /// Spreads the moves of a map while keeping its structure (Kakudai 3, docs/design.md §8.2-quater).
 /// <para>
 /// Every move (from the end of an object to the head of the next) keeps about the direction it has in the map and is
-/// only made longer, from its own length up to g(length). Nothing is ever turned as a block, nothing is moved closer
-/// than it was: a vertical jump stays vertical, a pattern keeps its orientation, a stream keeps its curve, and no
-/// jump gets shorter than in the map. The positions are the solution of one convex problem:
+/// only made longer, from its own length up to g(length). Nothing is moved closer than it was: a vertical jump stays
+/// vertical, a pattern keeps its orientation, a stream keeps its curve, and no jump gets shorter than in the map. The
+/// one exception: a stream that cannot be spaced where it is (along an edge of a map that already fills the
+/// playfield) is turned as one piece by the smallest angle at which it fits, and the move out of it re-aims as little
+/// as it can (see <see cref="Turns"/>). The positions are the solution of one convex problem:
 /// </para>
 /// <list type="bullet">
 /// <item>every head (and every point of a slider path) stays in the playfield;</item>
@@ -81,6 +85,52 @@ public static class Amplifier
     internal const double ConeDegrees = 25;
 
     private const double StreamConeDegrees = 30;
+
+    // Streams against an edge (docs/design.md §8.2-quinquies). Lab, 120 maps at k = 2: streams ×1.66 → ×1.70 (tenth
+    // ×1.41 → ×1.43, spread 1.091 → 1.078, cuts 4 → 3, bends 7 → 10 per 1000 notes), SR +1.10 → +1.12, never falling
+    // as k grows; jumps unchanged. AliA - utopia [Feelings], whose streams run along the edges of a map that already
+    // fills the playfield: ten streams gain 0.10 to 0.31 (×1.60 → ×1.91 at 141 s).
+
+    /// <summary>A stream is turned by this much at most.</summary>
+    private const double BurstMaxTurnDegrees = 60;
+
+    /// <summary>A stream that reaches less than this share of its growth where it is, is turned (by the smallest angle
+    /// at which it reaches it)...</summary>
+    private const double BurstReach = 0.95;
+
+    /// <summary>...or, when no turn reaches it, by the angle that reaches the most, if that gains this share. A turn
+    /// is kept when its stream then grows by this much more (×1.40 → ×1.43 at least), and no stream within
+    /// <see cref="BurstSpacingObjects"/> of it loses more than <see cref="BurstLoss"/> (without this check, a burst of
+    /// AliA - utopia [Feelings] next to a turned stream fell from ×1.40 to ×1.04).</summary>
+    private const double BurstGain = 0.03, BurstLoss = 0.02;
+
+    /// <summary>Streams of at least this many moves (3 notes) may be turned.</summary>
+    private const int MinBurstMoves = 2;
+
+    /// <summary>Rounds of turns (each solved again), and how many objects after a turned stream wait for the next
+    /// round: turning one moves what follows.</summary>
+    private const int BurstRounds = 6, BurstSpacingObjects = 16;
+
+    /// <summary>Which streams to turn, and by how much, is decided once per map at this factor (streams grow no further
+    /// past <see cref="StreamFactorCap"/>); the turns are whole from <see cref="FullTurnFactor"/> on, and grow from
+    /// nothing at k = 1 below it.</summary>
+    private const double ReferenceFactor = 2.5, FullTurnFactor = 2;
+
+    /// <summary>A turned stream takes this share of the curve it had at the reference factor (its whole curve: 17 bends
+    /// per 1000 notes at k = 2; none, streams ×1.67).</summary>
+    private const double CurveShare = 0.5;
+
+    /// <summary>A turned stream may still leave its turned directions by this much.</summary>
+    private const double TurnedConeDegrees = 15;
+
+    /// <summary>Weight of the move out of a turned stream leaving its original direction (its share across, squared):
+    /// it re-aims as little as it can (aimed at where the next object was, it would turn back on itself).</summary>
+    private const double SoftAimWeight = 0.2;
+
+    /// <summary>The move out of a turned stream keeps at least this share of its length along its original direction
+    /// (free: one of them fell to 14 % of its length; never shorter: the stream along the edge of the tests ×1.55
+    /// instead of ×1.60).</summary>
+    private const double SoftLeast = 0.8;
 
     /// <summary>A stream is spaced as by k up to this factor, no further: at k = 3 a dense stream wanted ×2.9 and could
     /// only fit by curling (71 bends per 1000 notes, the zoom spread 1.19 within a stream); capped at 2.5, streams ×1.84
@@ -162,9 +212,10 @@ public static class Amplifier
 
         var beats = new double[n];
         for (int i = 0; i < n; i++) beats[i] = beatLengthAt(objects[i].StartTime);
-        var problem = new Problem(objects, beats, options);
+        var turns = Turns(objects, beats, options);
+        var problem = new Problem(objects, beats, options, turns);
         var heads = problem.Solve();
-        if (options.AccentAngles) (problem, heads) = WithoutNewOverlaps(objects, beats, options, problem, heads);
+        if (options.AccentAngles) (problem, heads) = WithoutNewOverlaps(objects, beats, options, turns, problem, heads);
 
         int corrected = 0, reduced = 0;
         for (int i = 0; i < n; i++)
@@ -195,10 +246,10 @@ public static class Amplifier
     /// option.
     /// </summary>
     private static (Problem, Vector2[]) WithoutNewOverlaps(IReadOnlyList<MapObject> objects, double[] beats,
-        AmplifyOptions options, Problem problem, Vector2[] heads)
+        AmplifyOptions options, BurstTurn[] turns, Problem problem, Vector2[] heads)
     {
         // Without the option: at k = 1, the map as it is.
-        var plain = new Problem(objects, beats, options with { AccentAngles = false });
+        var plain = new Problem(objects, beats, options with { AccentAngles = false }, turns);
         var plainHeads = options.Factor == 1 ? objects.Select(o => o.Start).ToArray() : plain.Solve();
         var excused = new bool[objects.Count];
         foreach (var (i, _) in Overlaps(objects, beats, plainHeads, ExcusedPx)) excused[i] = true;
@@ -262,6 +313,83 @@ public static class Amplifier
         return pairs;
     }
 
+    /// <summary>A stream turned as one piece: its moves Start..End, the turn, the directions it is turned from (as
+    /// the stream curved at the reference factor), and how much of them is taken at this factor.</summary>
+    private sealed record BurstTurn(int Start, int End, double Angle, Vector2[] Directions, double Share = 1);
+
+    private static readonly ConditionalWeakTable<IReadOnlyList<MapObject>, ConcurrentDictionary<bool, BurstTurn[]>> Plans = new();
+
+    /// <summary>
+    /// The streams to turn, at this factor. Which ones and by how much is decided once per map, at the
+    /// <see cref="ReferenceFactor"/> (streams grow no further past it), so that it never changes with k; the turns
+    /// then grow continuously with k from nothing at k = 1, and the map still changes continuously with k.
+    /// </summary>
+    private static BurstTurn[] Turns(IReadOnlyList<MapObject> objects, double[] beats, AmplifyOptions options)
+    {
+        if (!options.SpaceStreams) return [];
+        var plans = Plans.GetValue(objects, _ => new ConcurrentDictionary<bool, BurstTurn[]>());
+        var plan = plans.GetOrAdd(options.KiaiOnly, _ =>
+            Plan(objects, beats, options with { Factor = ReferenceFactor, AccentAngles = false }));
+        double share = Math.Clamp((options.Factor - 1) / (FullTurnFactor - 1), 0, 1);
+        double curve = CurveShare * Math.Clamp((options.Factor - 1) / (ReferenceFactor - 1), 0, 1);
+        return plan.Select(t => t with { Angle = share * t.Angle, Share = curve }).ToArray();
+    }
+
+    /// <summary>
+    /// At the reference factor: the streams that cannot reach their spacing where they are (against an edge of a map
+    /// that already fills the playfield), each turned as one piece by the smallest angle at which it fits. Turning one
+    /// moves what follows, so only the first of a stretch is turned per round, and the map is solved again between the
+    /// rounds. A turn is kept only when its stream gains and no stream near it loses: it would only move the problem.
+    /// </summary>
+    private static BurstTurn[] Plan(IReadOnlyList<MapObject> objects, double[] beats, AmplifyOptions options)
+    {
+        var accepted = new List<BurstTurn>();
+        var refused = new HashSet<int>();
+        var problem = new Problem(objects, beats, options, accepted);
+        var runs = problem.Runs();
+        var heads = problem.Solve();
+        for (int round = 0; round < BurstRounds; round++)
+        {
+            var taken = accepted.Select(t => t.Start).Concat(refused).ToHashSet();
+            var proposed = problem.Propose(heads, runs, taken);
+            if (proposed.Count == 0) break;
+            // What matters is the growth up to the wanted one (a stream may grow past it, by its cone).
+            var before = runs.Select(r => problem.Growth(heads, r.Start, r.End)).ToArray();
+            var trial = new Problem(objects, beats, options, [.. accepted, .. proposed]);
+            trial.StartFrom(problem);
+            var trialHeads = trial.Solve();
+            var after = runs.Select(r => trial.Growth(trialHeads, r.Start, r.End)).ToArray();
+            bool all = true;
+            foreach (var t in proposed)
+            {
+                bool good = true;
+                for (int r = 0; r < runs.Count && good; r++)
+                {
+                    var (a, b) = runs[r];
+                    if (b < t.Start - BurstSpacingObjects || a > t.End + BurstSpacingObjects) continue;
+                    double wanted = problem.WantedGrowth(a, b);
+                    good = a == t.Start
+                        ? after[r] >= before[r] + BurstGain
+                        : Math.Min(after[r], wanted) >= Math.Min(before[r], wanted) - BurstLoss;
+                }
+                if (good) accepted.Add(t);
+                else
+                {
+                    refused.Add(t.Start);
+                    all = false;
+                }
+            }
+            if (all) (problem, heads) = (trial, trialHeads);
+            else
+            {
+                var kept = new Problem(objects, beats, options, accepted);
+                kept.StartFrom(problem);
+                (problem, heads) = (kept, kept.Solve());
+            }
+        }
+        return accepted.ToArray();
+    }
+
     private static AmplifyResult Result(IReadOnlyList<MapObject> objects, Placement[] placements, int corrected,
         int reduced)
     {
@@ -272,7 +400,7 @@ public static class Amplifier
     /// <summary>The convex problem of one map (see <see cref="Amplifier"/>), and its ADMM solver.</summary>
     private sealed class Problem
     {
-        private enum Move { Free, Fixed, Ray }
+        private enum Move { Free, Fixed, Ray, Soft }
 
         private readonly IReadOnlyList<MapObject> objects;
         private readonly int n;
@@ -287,8 +415,11 @@ public static class Amplifier
         // Solver state, kept from one solve to the next (a warm start after DropAccents).
         private double[]? q, zq, yq, zd, yd, constant;
         private Banded? system;
+        private readonly bool[] isStream;
+        private Vector2[] original = [];        // the directions in the map, before any stream is turned
 
-        public Problem(IReadOnlyList<MapObject> objects, double[] beats, AmplifyOptions options)
+        public Problem(IReadOnlyList<MapObject> objects, double[] beats, AmplifyOptions options,
+            IReadOnlyList<BurstTurn> turns)
         {
             this.objects = objects;
             n = objects.Count;
@@ -328,7 +459,7 @@ public static class Amplifier
             }
 
             double k = options.Factor;
-            var stream = new bool[n];
+            var stream = isStream = new bool[n];
             var pause = new bool[n];
             for (int i = 1; i < n; i++)
             {
@@ -388,9 +519,35 @@ public static class Amplifier
                     cone[i] = Math.Tan((stream[i] ? StreamConeDegrees : ConeDegrees) * Math.PI / 180);
 
             bool IsJump(int j) => kind[j] == Move.Ray && !stream[j] && length[j] >= AccentMovePx;
+            original = (Vector2[])unit.Clone();
+            foreach (var t in turns) Turn(t);
         }
 
-        public bool IsRay(int i) => kind[i] == Move.Ray;
+        /// <summary>The stream of <paramref name="t"/> is turned: each move from its original direction toward the one
+        /// it had curved to (by the share of the factor), then by the turn; it may curve a little from there. The turns
+        /// into and out of it are no longer kept, and the move out of it may re-aim (as little as it can).</summary>
+        private void Turn(BurstTurn t)
+        {
+            for (int j = t.Start; j <= t.End; j++)
+            {
+                var d = Vector2.Lerp(unit[j], t.Directions[j - t.Start], (float)t.Share);
+                unit[j] = Rotate(d.Length() > 1e-3f ? Vector2.Normalize(d) : unit[j], (float)t.Angle);
+                cone[j] = Math.Tan(TurnedConeDegrees * Math.PI / 180);
+            }
+            turnTie[t.Start] = 0;
+            turnTarget[t.Start] = 0;
+            system = null;
+            constant = null;
+            int o = t.End + 1;
+            if (o >= n) return;
+            turnTie[o] = 0;
+            turnTarget[o] = 0;
+            growthTie[o] = 0;
+            if (o + 1 < n) (turnTie[o + 1], turnTarget[o + 1], growthTie[o + 1]) = (0, 0, 0);
+            if (kind[o] == Move.Ray) kind[o] = Move.Soft;
+        }
+
+        public bool IsRay(int i) => kind[i] is Move.Ray or Move.Soft;
 
         public double Wanted(int i) => top[i];
 
@@ -399,7 +556,7 @@ public static class Amplifier
 
         /// <summary>A move in the frame of the original direction of move <paramref name="i"/>.</summary>
         public (double Along, double Across) Frame(int i, Vector2 move)
-            => (Vector2.Dot(move, unit[i]), unit[i].X * move.Y - unit[i].Y * move.X);
+            => (Vector2.Dot(move, original[i]), original[i].X * move.Y - original[i].Y * move.X);
 
         /// <summary>The accents of the turns at the objects marked in <paramref name="dropped"/> are given up (those
         /// turns are kept as in the map); the next <see cref="Solve"/> starts from the last solution.</summary>
@@ -410,7 +567,144 @@ public static class Amplifier
             constant = null;
         }
 
-        public Vector2[] Solve()
+        public Vector2[] Solve() => SolveOnce();
+
+        /// <summary>The next <see cref="Solve"/> starts from the solution of <paramref name="other"/> (the same map,
+        /// with other streams turned): far fewer iterations.</summary>
+        public void StartFrom(Problem other)
+        {
+            if (other.q == null) return;
+            (q, zq, yq, zd, yd) = ((double[])other.q.Clone(), (double[])other.zq!.Clone(), (double[])other.yq!.Clone(),
+                (double[])other.zd!.Clone(), (double[])other.yd!.Clone());
+        }
+
+        /// <summary>The streams of the map that may be turned: moves Start..End (consecutive stream steps that grow).</summary>
+        public List<(int Start, int End)> Runs()
+        {
+            var runs = new List<(int, int)>();
+            for (int i = 1; i < n; i++)
+            {
+                if (!Step(i)) continue;
+                int s0 = i;
+                while (Step(i + 1)) i++;
+                if (i - s0 + 1 >= MinBurstMoves) runs.Add((s0, i));
+            }
+            return runs;
+        }
+
+        /// <summary>The turns to try this round: for each stretch, the first stream not yet tried that does not reach its
+        /// spacing and that a turn helps.</summary>
+        public List<BurstTurn> Propose(Vector2[] heads, List<(int Start, int End)> runs, HashSet<int> taken)
+        {
+            var proposed = new List<BurstTurn>();
+            int skipUntil = 0;
+            foreach (var (s0, e) in runs)
+            {
+                if (taken.Contains(s0) || s0 <= skipUntil) continue;
+                double theta = FittingTurn(heads, s0, e, out _);
+                if (theta == 0) continue;
+                var directions = Enumerable.Range(s0, e - s0 + 1).Select(j => Solved(heads, j)).ToArray();
+                proposed.Add(new BurstTurn(s0, e, theta, directions));
+                skipUntil = e + BurstSpacingObjects;
+            }
+            return proposed;
+        }
+
+        /// <summary>How much the moves Start..End are wanted to grow.</summary>
+        public double WantedGrowth(int s0, int e)
+        {
+            double before = 0, wanted = 0;
+            for (int j = s0; j <= e; j++) (before, wanted) = (before + length[j], wanted + top[j]);
+            return wanted / before;
+        }
+
+        /// <summary>How much the moves Start..End grew: their new length over their length in the map.</summary>
+        public double Growth(Vector2[] heads, int s0, int e)
+        {
+            double before = 0, after = 0;
+            for (int j = s0; j <= e; j++)
+            {
+                before += length[j];
+                after += (heads[j] - heads[j - 1] - body[j]).Length();
+            }
+            return after / before;
+        }
+
+        private bool Step(int j) => j >= 1 && j < n && kind[j] == Move.Ray && isStream[j] && top[j] > length[j]
+                                    && lo[j] != hi[j];
+
+        /// <summary>The heads s−1..e of a burst turned by θ, its moves grown by the share f of their growth.</summary>
+        private Vector2[] Shape(Vector2[] heads, int s0, int e, double theta, double f)
+        {
+            var points = new Vector2[e - s0 + 2];
+            points[0] = heads[s0 - 1];
+            for (int j = s0; j <= e; j++)
+            {
+                double z = length[j] + f * (top[j] - length[j]);
+                points[j - s0 + 1] = points[j - s0] + body[j] + Rotate(Solved(heads, j), (float)theta) * (float)z;
+            }
+            return points;
+        }
+
+        /// <summary>The direction of move j as solved (the stream may have curved away from an edge).</summary>
+        private Vector2 Solved(Vector2[] heads, int j)
+        {
+            var v = heads[j] - heads[j - 1] - body[j];
+            float d = v.Length();
+            return d > 1 ? v / d : unit[j];
+        }
+
+        /// <summary>The share of its growth a burst turned by θ reaches inside the playfield (heads in their boxes).</summary>
+        private double Reach(Vector2[] heads, int s0, int e, double theta)
+        {
+            bool Fits(double f)
+            {
+                var points = Shape(heads, s0, e, theta, f);
+                for (int j = s0; j <= e; j++)
+                {
+                    var p = points[j - s0 + 1];
+                    if (p.X < lo[j].X || p.Y < lo[j].Y || p.X > hi[j].X || p.Y > hi[j].Y) return false;
+                }
+                return true;
+            }
+            if (Fits(1)) return 1;
+            double low = 0, high = 1;
+            if (!Fits(0)) return 0;
+            for (int it = 0; it < 20; it++)
+            {
+                double mid = 0.5 * (low + high);
+                if (Fits(mid)) low = mid; else high = mid;
+            }
+            return low;
+        }
+
+        /// <summary>The smallest turn at which the burst reaches <see cref="BurstReach"/> of its growth (0 when it does
+        /// so as it is, or when no turn helps by much); the reach at that turn.</summary>
+        private double FittingTurn(Vector2[] heads, int s0, int e, out double reach)
+        {
+            reach = Reach(heads, s0, e, 0);
+            if (reach >= BurstReach) return 0;
+            double best = 0, bestReach = reach;
+            for (int deg = 1; deg <= BurstMaxTurnDegrees; deg++)
+            {
+                double found = 0, foundReach = 0, foundDistance = double.PositiveInfinity;
+                for (int sign = -1; sign <= 1; sign += 2)
+                {
+                    double t = sign * deg * Math.PI / 180;
+                    double r = Reach(heads, s0, e, t);
+                    if (r < BurstReach) { if (r > bestReach + 1e-9) (best, bestReach) = (t, r); continue; }
+                    double distance = Vector2.Distance(Shape(heads, s0, e, t, r)[^1], new Vector2(256, 192));
+                    if (distance < foundDistance) (found, foundReach, foundDistance) = (t, r, distance);
+                }
+                if (foundDistance < double.PositiveInfinity) { reach = foundReach; return found; }
+            }
+            // No turn fits it: the best one, if it gains much.
+            if (bestReach < reach + BurstGain) return 0;
+            reach = bestReach;
+            return best;
+        }
+
+        private Vector2[] SolveOnce()
         {
             int m = 2 * n;
             bool warm = q != null;
@@ -475,6 +769,16 @@ public static class Amplifier
                     double vx = dx + yd[2 * i], vy = dy + yd[2 * i + 1];
                     if (kind[i] == Move.Fixed)
                         (zd[2 * i], zd[2 * i + 1]) = (unit[i].X, unit[i].Y);
+                    else if (kind[i] == Move.Soft)
+                    {
+                        // w·(a − T)² + w_b·b² (per px², over L²) + ρ/2·|z − v|², SoftLeast·L ≤ a ≤ T, |b| ≤ T: separable.
+                        var u = unit[i];
+                        double along = vx * u.X + vy * u.Y, across = u.X * vy - u.Y * vx;
+                        double L = length[i], T = top[i], w = 2 * GrowWeight / (L * L), wb = 2 * SoftAimWeight / (L * L);
+                        double a = Math.Clamp((w * T + Rho * along) / (w + Rho), SoftLeast * L, T);
+                        double b = Math.Clamp(Rho * across / (wb + Rho), -T, T);
+                        (zd[2 * i], zd[2 * i + 1]) = (a * u.X - b * u.Y, a * u.Y + b * u.X);
+                    }
                     else
                     {
                         var u = unit[i];

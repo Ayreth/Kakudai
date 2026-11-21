@@ -1005,28 +1005,72 @@ public class AmplifierTests
     [TestCase(3.0)]
     public void Patterns_AreNeverTurned(double factor)
     {
-        // The player's report: the patterns were turned to make room, which broke the structure of the map. Every move
-        // keeps its direction within ConeDegrees, and nothing is turned as a block.
+        // The player's report: the patterns were turned to make room, which broke the structure of the map. Every jump
+        // keeps its direction within ConeDegrees. Only a stream that cannot be spaced where it is may be turned as one
+        // piece (these 12-note streams aimed at the centre would need 528 px at ×2), and then the jump out of it
+        // re-aims, never back on itself.
         var objects = MixedMap(4);
         var result = Amplifier.Amplify(objects, Beat500, new AmplifyOptions(factor, true));
         var after = Layout.From(objects, result.Placements);
         var jumps = new List<double>();
+        var outs = new List<double>();
         var steps = new List<double>();
         for (int i = 1; i < objects.Length; i++)
         {
             var before = objects[i].Start - objects[i - 1].End;
             if (before.Length() < 3) continue;
             double deviation = Math.Abs(TurnDegrees(before, after.Starts[i] - after.Ends[i - 1]));
-            (objects[i].StartTime - objects[i - 1].StartTime <= 125 ? steps : jumps).Add(deviation);
+            bool step = objects[i].StartTime - objects[i - 1].StartTime <= 125;
+            bool afterStream = i >= 2 && objects[i - 1].StartTime - objects[i - 2].StartTime <= 125;
+            (step ? steps : afterStream ? outs : jumps).Add(deviation);
         }
         TestContext.Out.WriteLine($"sauts : {jumps.Average():0.0}° en moyenne, {jumps.Max():0.0}° au plus ; "
-                                  + $"streams : {steps.Average():0.0}°, {steps.Max():0.0}°");
+                                  + $"après un stream : {outs.Max():0.0}° ; streams : {steps.Average():0.0}°, {steps.Max():0.0}°");
         Assert.Multiple(() =>
         {
             Assert.That(result.Placements.Select(p => p.Rotation), Is.All.Zero);
             Assert.That(jumps.Max(), Is.LessThanOrEqualTo(Amplifier.ConeDegrees + 0.5), "un saut quitte sa direction");
             Assert.That(jumps.Average(), Is.LessThan(12));
-            Assert.That(steps.Average(), Is.LessThan(20), "les streams se courbent doucement, sans tourner");
+            Assert.That(outs.Max(), Is.LessThan(90), "le saut après un stream tourné revient en arrière");
+            Assert.That(Enumerable.Range(1, objects.Length - 1).Where(i => (objects[i].Start - objects[i - 1].End).Length() >= 3)
+                .Min(i => Vector2.Distance(after.Starts[i], after.Ends[i - 1]) / (objects[i].Start - objects[i - 1].End).Length()),
+                Is.GreaterThan(0.79), "un saut raccourci de plus de 20 %");
+            Assert.That(steps.Max(), Is.LessThanOrEqualTo(90), "un stream tourné de plus de 60° (et 30° de courbe)");
+        });
+    }
+
+    [Test]
+    public void Bursts_AlongAnEdge_AreTurnedToBeSpaced()
+    {
+        // The player's report (AliA - utopia [Feelings]): streams along the edges of a map that already fills the
+        // playfield were not spaced. A 10-note stream runs along the top from x = 330 to x = 15, after a jump from the
+        // right: ×2 needs 630 px across. It is turned down as one piece, evenly spaced; a stream with room is not
+        // turned.
+        var objects = new List<MapObject> { Circle(480, 200, 0), Circle(400, 300, 500), Circle(480, 200, 1000) };
+        double time = 1250;
+        for (int j = 0; j < 10; j++, time += 125) objects.Add(Circle(330 - 35 * j, 30, time));
+        objects.Add(Circle(100, 250, time + 125));
+        objects.Add(Circle(200, 330, time + 625));
+        time += 1125;
+        // A short stream in the middle, with room.
+        for (int j = 0; j < 4; j++, time += 125) objects.Add(Circle(230 + 20 * j, 200, time));
+        objects.Add(Circle(330, 300, time + 375));
+        var map = objects.ToArray();
+
+        var result = Amplifier.Amplify(map, Beat500, new AmplifyOptions(2, true));
+        var layout = Layout.From(map, result.Placements);
+        var zooms = Enumerable.Range(4, 9).Select(i => Vector2.Distance(layout.Starts[i], layout.Starts[i - 1]) / 35).ToArray();
+        TestContext.Out.WriteLine("stream du haut : " + string.Join(" ", zooms.Select(z => z.ToString("0.00"))));
+        var middle = Enumerable.Range(map.Length - 4, 3)
+            .Select(i => Math.Abs(TurnDegrees(map[i].Start - map[i - 1].Start, layout.Starts[i] - layout.Starts[i - 1])))
+            .ToArray();
+        Assert.Multiple(() =>
+        {
+            // 3.0.0, which never turned a stream: ×1.39.
+            Assert.That(zooms.Min(), Is.GreaterThan(1.55), "le stream le long du bord est écarté");
+            Assert.That(zooms.Max() / zooms.Min(), Is.LessThan(1.1), "d'un seul tenant");
+            Assert.That(middle.Max(), Is.LessThan(Amplifier.ConeDegrees + 0.5), "le stream qui a la place n'est pas tourné");
+            Assert.That(Layout.From(map).Starts.Zip(layout.Starts).All(p => p.Second.X is >= 0 and <= 512 && p.Second.Y is >= 0 and <= 384));
         });
     }
 

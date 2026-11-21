@@ -106,6 +106,11 @@ Settings and profiles are kept in `settings.json`, in `%LocalAppData%\Kakudai` o
   300 px jump grows to about 440 px instead of flying from one corner to the other.
 - **Streams are spaced as one piece**: the same zoom all along a stream, and they may curve smoothly away from an
   edge, never bend at a note. Past ×2.5, streams stop growing (they would only fit by curling).
+- **A stream stuck against an edge is turned as one piece.** When a map already fills the playfield, a stream that
+  runs along an edge has no room to grow in its own direction. Kakudai then turns that stream (and only it) toward the
+  middle, by the smallest angle that lets it be spaced (60° at most), and the jump right after it re-aims as little as
+  it can (it may lose up to 20 % of its length). A turn is kept only if it does not take the room of a stream next to
+  it. The streams that have room, and every other pattern, are never turned.
 - **More spacing never gives a smaller map.** The positions are the solution of one convex problem, so ×2.6 is
   always a little more spread than ×2.5, and the star rating follows.
 - **Everything stays in the playfield**: every circle, and every point of every slider. When the map does not fit,
