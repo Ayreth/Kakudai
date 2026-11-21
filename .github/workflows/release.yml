@@ -105,7 +105,8 @@ jobs:
           cd lame-3.100
           # 3.100 exports a symbol that no longer exists; the macOS linker refuses it.
           sed -i '' '/lame_init_old/d' include/libmp3lame.sym
-          CC="clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0" ./configure --disable-frontend --disable-static \
+          # Several -arch: clang refuses -E, so the preprocessor is given on its own.
+          CC="clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0" CPP="clang -E" ./configure --disable-frontend --disable-static \
             --enable-shared --disable-dependency-tracking --prefix="$PWD/install"
           make -j"$(sysctl -n hw.ncpu)" && make install
       - run: dotnet publish src/Kakudai.Desktop -c Release -r ${{ matrix.rid }} --self-contained true -o out/publish
