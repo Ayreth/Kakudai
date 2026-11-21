@@ -78,7 +78,8 @@ It follows every change of setting. Then:
   - **Emulate HR**: the Hard Rock stats (CS ×1.3, HP/AR/OD ×1.4, capped at 10) applied over your values.
   - **Flip map**: mirror the playfield vertically (like HR), horizontally, or both.
   - **Crush streams**: streams keep their original spacing, only the jumps grow.
-  - **Accent angles**: the turns between jumps get sharper, streams are left alone.
+  - **Accent angles**: the turns between jumps get sharper (as far as a jump may lean), streams are left alone,
+    and no note lands on a recent one.
   - **Kiai only**: only the notes inside kiai sections move; the rest of the map stays where it was.
 - **Generate**: writes the new difficulty as a `.osz` and hands it to the game the map came from, which imports it
   right away: osu!stable is started again with the file (as a double-click on a `.osz` does, like osu-trainer); lazer
@@ -98,16 +99,17 @@ Settings and profiles are kept in `settings.json`, in `%LocalAppData%\Kakudai` o
 
 ## How the spacing works
 
-- The map is cut into **patterns** (a jump, a triangle, a slider pair, a stream…). Each one is enlarged and moved as
-  a **rigid piece**: turned and shifted as a whole, never bent, so its shape and flow stay recognisable.
-- The jump between two patterns grows with **Spacing**, but **big jumps are capped**: at ×2 a 40 px move becomes
-  about 80 px, while a 300 px jump grows to about 440 px instead of flying from one corner to the other.
-- **Streams stay continuous.** A long stream may be placed in several pieces, but the pieces are joined at stream
-  spacing, in the same direction: a stream is never cut into jumps. If it cannot fit, the whole stream is scaled
-  down a little rather than broken.
-- **Everything stays in the playfield**: every circle, and every point of every slider. When a pattern does not fit,
-  Kakudai turns the next one, shortens the jump a little or shrinks the pattern a little, whichever changes the map
-  least.
+- **The structure of the map is kept.** Every move keeps the direction it has in the map (a jump may lean by 25° at
+  most, to make room) and is only made longer: a vertical jump stays vertical, a pattern keeps its orientation,
+  nothing is turned to fit, no jump ends up shorter than in the map, and sliders are never turned.
+- Every move grows with **Spacing**, but **big jumps are capped**: at ×2 a 40 px move becomes about 80 px, while a
+  300 px jump grows to about 440 px instead of flying from one corner to the other.
+- **Streams are spaced as one piece**: the same zoom all along a stream, and they may curve smoothly away from an
+  edge, never bend at a note. Past ×2.5, streams stop growing (they would only fit by curling).
+- **More spacing never gives a smaller map.** The positions are the solution of one convex problem, so ×2.6 is
+  always a little more spread than ×2.5, and the star rating follows.
+- **Everything stays in the playfield**: every circle, and every point of every slider. When the map does not fit,
+  the moves that would leave the playfield grow less, the rest as much as they can.
 - The rhythm, hitsounds and combo colours are kept as they are. With a rate, every time in the map (notes, timing
   points, breaks, preview) is divided by the rate and the song is re-timed to match, so the notes
   land on the same spot in the music.

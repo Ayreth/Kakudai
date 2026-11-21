@@ -151,14 +151,16 @@ public class AmplifierTests
         var after = result.Placements.Select(p => p.Start).ToArray();
         TestContext.Out.WriteLine(string.Join(" ", after) + $" Reduced={result.Reduced}");
 
-        double zoom = AssertSimilar(square, after, 0.03);
+        // It cannot reach g(300) ≈ 443 px in a 384 px high playfield: the sides grow as far as they fit, the vertical
+        // ones less, so it is a rectangle, not a square turned to fit.
+        double zoom = AssertSimilar(square, after, 0.08);
         Assert.Multiple(() =>
         {
             Assert.That(after.All(InHeadArea), Is.True, "tête hors du playfield");
-            Assert.That(zoom, Is.InRange(1.1, 1.3), "le carré grandit autant qu'il tient, pas plus");
+            Assert.That(zoom, Is.InRange(1.2, 1.4), "le carré grandit autant qu'il tient, pas plus");
             for (int i = 1; i < square.Length; i++)
-                Assert.That(Vector2.Distance(after[i], after[i - 1]), Is.LessThan(400), $"saut {i} d'un coin à l'autre");
-            Assert.That(result.Reduced, Is.EqualTo(4), "le carré ne tient pas au zoom souhaité");
+                Assert.That(Vector2.Distance(after[i], after[i - 1]), Is.InRange(300, 445), $"saut {i}");
+            Assert.That(result.Placements.Select(p => p.Rotation), Is.All.Zero);
         });
     }
 
@@ -386,13 +388,15 @@ public class AmplifierTests
             Assert.That(ShapeMetrics.StreamCuts(stream, Beat180, layout), Is.Empty, "coupures de stream (locales)");
             Assert.That(layout.Starts.All(InHeadArea), Is.True, "tête hors du playfield");
             Assert.That(zoom[zoom.Length / 2], Is.GreaterThanOrEqualTo(DeathstreamZoom), "zoom médian du stream");
-            Assert.That(zoom[zoom.Length / 10], Is.GreaterThanOrEqualTo(1.6), "zoom du dixième le moins écarté");
+            Assert.That(zoom[zoom.Length / 10], Is.GreaterThanOrEqualTo(0.9 * zoom[zoom.Length / 2]),
+                "le stream est écarté de la même façon tout du long");
+            Assert.That(inStream.Average(), Is.LessThan(6), "le stream garde ses virages, à une courbure douce près");
         });
     }
 
-    /// <summary>The median zoom the deathstream must reach at k = 2: s* ≈ 2 (lab A3: ×1.99; A2, blocks of 4 beats and a
-    /// band over the whole run: ×1.39).</summary>
-    private const double DeathstreamZoom = 1.8;
+    /// <summary>The median zoom the deathstream must reach at k = 2. Kakudai 3 keeps its loops and their orientation
+    /// (×1.56); 2.1 to 2.2.1 reached ×1.99 by bending it at every beat, up to 25° per note.</summary>
+    private const double DeathstreamZoom = 1.5;
 
     /// <summary>Signed turning angle from move <paramref name="a"/> to move <paramref name="b"/>, in degrees.</summary>
     private static double TurnDegrees(Vector2 a, Vector2 b)
@@ -469,7 +473,8 @@ public class AmplifierTests
                     Assert.That(result.Placements[i], Is.EqualTo(new Placement(objects[i].Start, 0)), $"objet {i}");
                 else
                     Assert.That(InHeadArea(result.Placements[i].Start), Is.True, $"objet {i} hors du playfield");
-            Assert.That(after.Average(Math.Abs), Is.GreaterThanOrEqualTo(110), "virage moyen dans le kiai");
+            // Both ends of the kiai are held in place: the zigzag can only sharpen a little in between.
+            Assert.That(after.Average(Math.Abs), Is.GreaterThanOrEqualTo(95), "virage moyen dans le kiai");
             Assert.That(ShapeMetrics.Overlaps(objects, Beat500, Layout.From(objects, result.Placements)), Is.Zero,
                 "chevauchements");
         });
@@ -503,12 +508,11 @@ public class AmplifierTests
     }
 
     [Test]
-    public void AccentAngles_TurnsASliderWithTheMoveIntoIt()
+    public void AccentAngles_NeverTurnASlider()
     {
         // Jumps at 1/2 in a 90° zigzag (moves of 57 px) along the top edge, 12 px from it; object 2 is a slider whose
-        // body goes 40 px right along the edge, and the zigzag goes on from its end. Inside its block, the slider is
-        // turned with the move into it, which lifts its end by about 20 px: the block only fits if its extent is that
-        // of the turned body (else it lands outside and goes back to its place, unturned).
+        // body goes 40 px right along the edge, and the zigzag goes on from its end. The turns are sharpened around it,
+        // its body is only moved: a slider keeps its shape and its orientation (Kakudai 3).
         MapObject[] objects =
         [
             Circle(80, 12, 0), Circle(120, 52, 250), StraightSlider(160, 12, 500, 700, new Vector2(40, 0)),
@@ -517,18 +521,13 @@ public class AmplifierTests
 
         var result = Amplifier.Amplify(objects, Beat500, new AmplifyOptions(1, true, AccentAngles: true));
         var layout = Layout.From(objects, result.Placements);
-        var (slider, placement) = (objects[2], result.Placements[2]);
-        double bodyBefore = TurnDegrees(slider.Start - objects[1].End, slider.End - slider.Start);
-        double bodyAfter = TurnDegrees(layout.Starts[2] - layout.Ends[1], layout.Ends[2] - layout.Starts[2]);
-        TestContext.Out.WriteLine($"rotations {string.Join(" ", result.Placements.Select(p => p.Rotation.ToString("0.00")))}, "
-                                  + $"virages {string.Join(" ", Turns(layout, 1, 6).Select(t => t.ToString("0")))}");
+        TestContext.Out.WriteLine($"virages {string.Join(" ", Turns(layout, 1, 6).Select(t => t.ToString("0")))}");
 
         Assert.Multiple(() =>
         {
-            Assert.That(Turns(layout, 1, 6).Average(Math.Abs), Is.GreaterThan(110), "virages accentués");
-            Assert.That(placement.Rotation, Is.Not.EqualTo(result.Placements[0].Rotation), "le slider est tourné dans le bloc");
-            Assert.That(bodyAfter, Is.EqualTo(bodyBefore).Within(0.5), "le corps suit le mouvement qui y entre");
-            foreach (var p in PlacedPath(slider, placement))
+            Assert.That(Turns(layout, 1, 6).Average(Math.Abs), Is.GreaterThan(105), "virages accentués");
+            Assert.That(result.Placements.Select(p => p.Rotation), Is.All.Zero, "rien n'est tourné");
+            foreach (var p in PlacedPath(objects[2], result.Placements[2]))
                 Assert.That(InBodyArea(p), Is.True, $"{p} hors du playfield");
         });
     }
@@ -628,10 +627,14 @@ public class AmplifierTests
             Assert.That(after.Average(Math.Abs), Is.GreaterThanOrEqualTo(110), "virage moyen");
             for (int i = 0; i < objects.Length; i++)
                 Assert.That(InHeadArea(result.Placements[i].Start), Is.True, $"objet {i} en {result.Placements[i].Start}");
+            // A jump turns to sharpen the angles: never shorter than it was, longer by 1/cos(25°) at most.
             var gaps = Gaps(layout);
             for (int i = 0; i < gaps.Length; i++)
-                Assert.That(gaps[i], Is.EqualTo(Vector2.Distance(objects[i + 1].Start, objects[i].Start)).Within(0.5),
-                    $"à k = 1, le saut {i + 1} garde sa longueur");
+            {
+                double before = Vector2.Distance(objects[i + 1].Start, objects[i].Start);
+                Assert.That(gaps[i], Is.InRange(before - 0.5, before / Math.Cos(Amplifier.ConeDegrees * Math.PI / 180) + 0.5),
+                    $"à k = 1, le saut {i + 1} garde à peu près sa longueur");
+            }
         });
     }
 
@@ -657,12 +660,14 @@ public class AmplifierTests
         {
             Assert.That(Turns(a, 1, 4).Average(Math.Abs), Is.GreaterThan(Turns(p, 1, 4).Average(Math.Abs) + 10),
                 "les virages des sauts doivent être accentués");
-            var (gapsP, gapsA) = (Gaps(p), Gaps(a));
-            for (int i = stream[1]; i <= stream[^1]; i++)
-                Assert.That(gapsA[i - 1], Is.EqualTo(gapsP[i - 1]).Within(0.05), $"écart {i} du stream");
+            // The whole map is one problem: the accents around the stream may move it and curve it a little, never
+            // accent its turns nor cut it.
+            var zooms = Enumerable.Range(stream[1], stream.Length - 1)
+                .Select(i => Gaps(a)[i - 1] / Vector2.Distance(objects[i].Start, objects[i - 1].Start)).ToArray();
+            Assert.That(zooms.Max() / zooms.Min(), Is.LessThan(1.3), "le stream est écarté d'un seul tenant");
             var (turnsO, turnsA) = (Turns(original, stream[1], stream[^2]), Turns(a, stream[1], stream[^2]));
             for (int i = 0; i < turnsO.Length; i++)
-                Assert.That(turnsA[i], Is.EqualTo(turnsO[i]).Within(0.05), $"virage {stream[1] + i} du stream");
+                Assert.That(turnsA[i], Is.EqualTo(turnsO[i]).Within(6), $"virage {stream[1] + i} du stream");
             Assert.That(a.Starts.All(InHeadArea), Is.True, "tête hors du playfield");
         });
     }
@@ -688,47 +693,6 @@ public class AmplifierTests
             p = Vector2.Clamp(p, new Vector2(20, 20), new Vector2(492, 364));
         }
         return objects;
-    }
-
-    [TestCase(245f, 165f, false)] // where the accent would put object 5: the guard drops it
-    [TestCase(450f, 300f, true)]  // far away: the full accent
-    public void KiaiOnly_AccentGuardSeesTheObjectsLeftInPlaceAfterTheKiai(float x, float y, bool accented)
-    {
-        // A 90° zigzag at 1/2 (moves of 57 px) in kiai from object 0 to 5, then objects 6 and 7 left in place, within 2
-        // beats of object 5. The accents so far (−30°, +30°, −30° at objects 1 to 3) turn the path: accenting the turn
-        // at object 4 (+30°) would put object 5 at (249.3, 160.7), 6 px from object 7 at (245, 165) (half of it at
-        // (258.3, 149.0), 21 px), and only the guard looking past the end of the kiai can see it. The accents are those
-        // of the guard itself, before any block is placed or checked.
-        var objects = Enumerable.Range(0, 6)
-            .Select(i => Circle(100 + 40 * i, i % 2 == 0 ? 150 : 190, i * 250) with { InKiai = true })
-            .Append(Circle(400, 300, 1500)).Append(Circle(x, y, 1750)).ToArray();
-
-        var accents = Amplifier.GuardedAccents(objects, Beat500, new AmplifyOptions(1, true, AccentAngles: true, KiaiOnly: true));
-        TestContext.Out.WriteLine(string.Join(" ", accents.Select(a => (a * 180 / Math.PI).ToString("0"))));
-
-        Assert.Multiple(() =>
-        {
-            Assert.That(Math.Abs(accents[3]) * 180 / Math.PI, Is.EqualTo(30).Within(0.01),
-                "l'accent d'avant n'est pas concerné");
-            Assert.That(Math.Abs(accents[4]) * 180 / Math.PI, accented ? Is.EqualTo(30).Within(0.01) : Is.Zero, "accent en 4");
-        });
-    }
-
-    [TestCase(31f, false)] // no overlap of the metric (30 px) without the option: it excuses nothing
-    [TestCase(29f, false)] // an overlap, but within the rounding margin: a written file may read it back at 30 px
-    [TestCase(25f, true)]
-    public void AccentAngles_OnlyOverlapsWithoutTheOptionExcuseTheSame(float distance, bool excused)
-    {
-        // Object 2 was 200 px from object 0; without the option it lands this far from it.
-        MapObject[] objects = [Circle(100, 100, 0), Circle(200, 100, 250), Circle(300, 100, 500)];
-        Placement[] plain =
-        [
-            new(objects[0].Start, 0), new(objects[1].Start, 0), new(objects[0].Start + new Vector2(0, distance), 0),
-        ];
-
-        var result = Amplifier.Excused(objects, [500, 500, 500], plain);
-
-        Assert.That(result, Is.EqualTo(new[] { false, false, excused }));
     }
 
     [TestCase(1.0)]
@@ -847,24 +811,24 @@ public class AmplifierTests
     }
 
     [Test]
-    public void ImpossibleBlock_IsSplit_AndItsPartsPlaced()
+    public void PlayfieldCorners_AreBroughtInside_AndKeepTheirEdges()
     {
-        // The four corners of the playfield in one pattern: 512×384 fits nowhere, at any rotation, so the block is
-        // cut in two; each half (one 512 px edge) fits once turned, and is placed instead of staying in its corners.
+        // The four corners of the playfield: nothing can grow, everything is brought 1 px inside, the edges stay as long
+        // as the playfield allows.
         Vector2[] corners = [new(0, 0), new(512, 0), new(512, 384), new(0, 384)];
         var objects = corners.Select((p, i) => Circle(p.X, p.Y, i * 250)).ToArray();
 
         var result = Amplify(2, objects);
         var after = result.Placements.Select(p => p.Start).ToArray();
-        TestContext.Out.WriteLine(string.Join(" ", after) + $" Corrected={result.Corrected}");
+        TestContext.Out.WriteLine(string.Join(" ", after));
 
         Assert.Multiple(() =>
         {
             for (int i = 0; i < after.Length; i++)
                 Assert.That(InHeadArea(after[i]), Is.True, $"objet {i} en {after[i]}");
-            // Each half is rigid: its 512 px edge is at most zoomed by g(512)/512 ≈ 1.04.
-            Assert.That(Vector2.Distance(after[1], after[0]), Is.InRange(511.9, 532.5));
-            Assert.That(Vector2.Distance(after[3], after[2]), Is.InRange(511.9, 532.5));
+            Assert.That(Vector2.Distance(after[1], after[0]), Is.EqualTo(510).Within(0.1));
+            Assert.That(Vector2.Distance(after[2], after[1]), Is.EqualTo(382).Within(0.1));
+            Assert.That(Vector2.Distance(after[3], after[2]), Is.EqualTo(510).Within(0.1));
         });
     }
 
@@ -982,6 +946,122 @@ public class AmplifierTests
             best = Math.Min(best, watch.Elapsed.TotalMilliseconds);
         }
         return (best, result);
+    }
+
+
+    /// <summary>A map of jumps and streams that fills the playfield: random jumps at 1/2, every 8th beat a 1/4 stream
+    /// of 12 notes along a gentle curve.</summary>
+    private static MapObject[] MixedMap(int seed)
+    {
+        var jumps = RandomJumps(seed, 160);
+        var objects = new List<MapObject>();
+        double time = 0;
+        for (int i = 0; i < jumps.Length; i++)
+        {
+            objects.Add(Circle(jumps[i].Start.X, jumps[i].Start.Y, time));
+            time += 250;
+            if (i % 16 != 15) continue;
+            var p = jumps[i].Start;
+            var heading = Math.Atan2(192 - p.Y, 256 - p.X);
+            for (int j = 0; j < 12; j++)
+            {
+                heading += 0.12;
+                p += 22 * new Vector2((float)Math.Cos(heading), (float)Math.Sin(heading));
+                objects.Add(Circle(p.X, p.Y, time));
+                time += 125;
+            }
+            time += 125;
+        }
+        return objects.ToArray();
+    }
+
+    [TestCase(1)]
+    [TestCase(2)]
+    [TestCase(3)]
+    public void MoreSpacing_NeverMakesTheMapSmaller(int seed)
+    {
+        // The player's report: going from 2.5 to 2.6 could lower the star rating. The spacing is the solution of one
+        // convex problem: it changes continuously with k, every move is at least as long as in the map, and the map
+        // gets bigger as k grows.
+        var objects = MixedMap(seed);
+        var original = Gaps(Layout.From(objects));
+        double previous = 0;
+        Assert.Multiple(() =>
+        {
+            for (double k = 1.5; k <= 3.0001; k += 0.1)
+            {
+                var result = Amplifier.Amplify(objects, Beat500, new AmplifyOptions(k, true));
+                var gaps = Gaps(Layout.From(objects, result.Placements));
+                double mean = gaps.Average();
+                Assert.That(mean, Is.GreaterThanOrEqualTo(previous - 0.05), $"k = {k:0.0} : saut moyen {mean:0.00}");
+                previous = mean;
+                for (int i = 0; i < gaps.Length; i++)
+                    Assert.That(gaps[i], Is.GreaterThanOrEqualTo(original[i] - 0.1), $"k = {k:0.0} : saut {i + 1} raccourci");
+            }
+        });
+    }
+
+    [TestCase(2.0)]
+    [TestCase(3.0)]
+    public void Patterns_AreNeverTurned(double factor)
+    {
+        // The player's report: the patterns were turned to make room, which broke the structure of the map. Every move
+        // keeps its direction within ConeDegrees, and nothing is turned as a block.
+        var objects = MixedMap(4);
+        var result = Amplifier.Amplify(objects, Beat500, new AmplifyOptions(factor, true));
+        var after = Layout.From(objects, result.Placements);
+        var jumps = new List<double>();
+        var steps = new List<double>();
+        for (int i = 1; i < objects.Length; i++)
+        {
+            var before = objects[i].Start - objects[i - 1].End;
+            if (before.Length() < 3) continue;
+            double deviation = Math.Abs(TurnDegrees(before, after.Starts[i] - after.Ends[i - 1]));
+            (objects[i].StartTime - objects[i - 1].StartTime <= 125 ? steps : jumps).Add(deviation);
+        }
+        TestContext.Out.WriteLine($"sauts : {jumps.Average():0.0}° en moyenne, {jumps.Max():0.0}° au plus ; "
+                                  + $"streams : {steps.Average():0.0}°, {steps.Max():0.0}°");
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.Placements.Select(p => p.Rotation), Is.All.Zero);
+            Assert.That(jumps.Max(), Is.LessThanOrEqualTo(Amplifier.ConeDegrees + 0.5), "un saut quitte sa direction");
+            Assert.That(jumps.Average(), Is.LessThan(12));
+            Assert.That(steps.Average(), Is.LessThan(20), "les streams se courbent doucement, sans tourner");
+        });
+    }
+
+    [TestCase(1.5)]
+    [TestCase(2.0)]
+    [TestCase(3.0)]
+    public void Streams_AreZoomedAsOnePiece(double factor)
+    {
+        // The player's report: streams spaced one way here, another there, or bent at odd places. Each stream of the
+        // mixed map is zoomed alike all along and keeps its curve.
+        var objects = MixedMap(5);
+        var result = Amplifier.Amplify(objects, Beat500, new AmplifyOptions(factor, true));
+        var layout = Layout.From(objects, result.Placements);
+        var gaps = Gaps(layout);
+        Assert.Multiple(() =>
+        {
+            for (int start = 0; start < objects.Length; start++)
+            {
+                if (start == 0 || objects[start].StartTime - objects[start - 1].StartTime != 125) continue;
+                if (start >= 2 && objects[start - 1].StartTime - objects[start - 2].StartTime == 125) continue;
+                // A stream: from start − 1, 12 notes.
+                var zooms = Enumerable.Range(start, 11).Select(i =>
+                    gaps[i - 1] / Vector2.Distance(objects[i].Start, objects[i - 1].Start)).ToArray();
+                string all = string.Join(" ", zooms.Select(z => z.ToString("0.00")));
+                // A long stream may grow or shrink slowly along a wall, more so at k = 3; never by a jump.
+                Assert.That(zooms.Max() / zooms.Min(), Is.LessThan(1.25 + 0.1 * (factor - 1)), $"stream à l'objet {start - 1} : {all}");
+                var turnsBefore = Turns(Layout.From(objects), start, start + 9);
+                var turnsAfter = Turns(layout, start, start + 9);
+                for (int i = 0; i < turnsBefore.Length; i++)
+                    Assert.That(Math.Abs(turnsAfter[i] - turnsBefore[i]), Is.LessThan(10 + 2.5 * (factor - 1)), $"virage faussé dans le stream à l'objet {start - 1}");
+                for (int i = 1; i < zooms.Length; i++)
+                    Assert.That(zooms[i] / zooms[i - 1], Is.InRange(1 / 1.08, 1.08), $"saute dans le stream à l'objet {start - 1} : {all}");
+                Assert.That(zooms.Min(), Is.GreaterThan(1.05), $"stream à l'objet {start - 1} écarté");
+            }
+        });
     }
 
     [Test]

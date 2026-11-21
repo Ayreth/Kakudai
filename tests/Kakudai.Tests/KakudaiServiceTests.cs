@@ -202,7 +202,7 @@ public class KakudaiServiceTests
         using var reader = new StreamReader(zip.GetEntry(osuName)!.Open());
         var lines = reader.ReadToEnd().Split('\n').Select(l => l.TrimEnd('\r')).ToList();
         Assert.That(lines, Does.Contain("Version:2x spaced Insane").And.Contain("AudioFilename: audio.mp3"));
-        Assert.That(lines, Does.Contain("256,192,1000,1,0,0:0:0:0:"), "times untouched at rate 1");
+        Assert.That(lines.Any(l => l.EndsWith(",1000,1,0,0:0:0:0:")), Is.True, "times untouched at rate 1");
         Assert.That(Directory.Exists(audioDir), Is.False, "no audio work at rate 1");
     }
 
