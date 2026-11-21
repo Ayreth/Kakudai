@@ -201,7 +201,9 @@ public static class Amplifier
     /// <summary>The first two objects of a block land on an object of the last 2 beats when they come closer to it than
     /// this, while they were at least <see cref="FarPx"/> from it; each one costs <see cref="CrowdWeight"/>. Lab A2 at
     /// k = 2 (with the guard on the map unzoomed): overlaps 10.4 ‰ with no such cost, 5.1 ‰ with it, the same with a
-    /// weight of 4. Most overlaps the accents made were an object landing on the one two before it.</summary>
+    /// weight of 4. Most overlaps the accents made were an object landing on the one two before it. Checked for every
+    /// block, with or without the accents (a reviewer's report: "restrict its overlaps"): on 300 maps at k = 2 / k = 3,
+    /// overlaps 12.7 → 8.5 ‰ / 14.7 → 10.0 ‰, same spacing and turns; a weight of 2 or 4 changes nothing more.</summary>
     private const float CrowdPx = 30;
 
     private const float FarPx = 60;
@@ -1222,6 +1224,9 @@ public static class Amplifier
                 block.JumpUnit = length > 0 ? block.Jump / length : Vector2.Zero;
                 bool zoomed = spaceStreams || !IsStreamStep(objects, beats, f);
                 block.WantedJump = length < StackPx || !zoomed ? length : Grow(length, k);
+                // The entry jump must not land the block on a recent object it was far from (CrowdCost).
+                block.CheckBack = Far(objects, beats, f, f - 2);
+                block.CheckSecond = block.To > f && Far(objects, beats, f + 1, f - 1);
                 block.MoveBefore = previousMove;
                 block.HasMoveBefore = hasPrevious && previousMove.Length() > 1;
 
@@ -1550,21 +1555,16 @@ public static class Amplifier
     {
         const double step = 2 * Math.PI / AngleSteps;
         double sum = 0, previous = 0; // sum: the accents of the objects before next, since the last restart
-        bool touched = false;         // one of them is not 0
         int next = 0;
         foreach (var block in blocks)
         {
             if (block.Spinner)
             {
-                (sum, previous, next, touched) = (0, 0, block.To + 1, false);
+                (sum, previous, next) = (0, 0, block.To + 1);
                 continue;
             }
-            if (block.Restart) (sum, previous, next, touched) = (0, 0, block.From, false);
-            for (; next < block.From; next++)
-            {
-                sum += accents[next];
-                touched |= accents[next] != 0;
-            }
+            if (block.Restart) (sum, previous, next) = (0, 0, block.From);
+            for (; next < block.From; next++) sum += accents[next];
 
             // The frame of a block is that of its first move; a single object is turned like the jump into it.
             bool inner = block.To > block.From;
@@ -1577,11 +1577,6 @@ public static class Amplifier
                 block.TurnOut += first;
                 if (first != 0) block.JumpUnit = Rotate(block.JumpUnit, Math.Cos(-first), Math.Sin(-first));
                 block.Shift = (int)Math.Round(Wrap(reference - previous) / step);
-                if (touched || first != 0) // where the accents changed nothing, the search is the one without them
-                {
-                    block.CheckBack = Far(objects, beats, block.From, block.From - 2);
-                    block.CheckSecond = inner && Far(objects, beats, block.From + 1, block.From - 1);
-                }
             }
             if (reference != 0)
             {
@@ -2168,7 +2163,7 @@ public static class Amplifier
     }
 
     /// <summary>
-    /// With accented angles: <see cref="CrowdWeight"/> for each of the first two objects of the block that the jump to
+    /// <see cref="CrowdWeight"/> for each of the first two objects of the block that the jump to
     /// <paramref name="head"/> (block turned by <paramref name="t"/>, zoomed by fraction <paramref name="f"/>) lands on
     /// an object of the last 2 beats it was far from: the first one on the end of the object two before it, the second
     /// one on the last object of the previous block.

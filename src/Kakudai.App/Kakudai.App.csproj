@@ -9,7 +9,7 @@
     <AssemblyName>Kakudai</AssemblyName>
     <RootNamespace>Kakudai.App</RootNamespace>
     <!-- The released version (tag vX.Y.Z); the update banner compares it with the latest release on GitHub. -->
-    <Version>2.2.0</Version>
+    <Version>2.2.1</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationIcon>kakudai.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
