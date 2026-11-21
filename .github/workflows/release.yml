@@ -71,12 +71,12 @@ jobs:
           echo "$LAME_SHA256  lame.tar.gz" | sha256sum -c -
           tar xzf lame.tar.gz
           cd lame-3.100
-          ./configure --disable-frontend --disable-static --enable-shared --prefix="$PWD/install"
+          ./configure --disable-frontend --disable-static --enable-shared --prefix="$RUNNER_TEMP/lame"
           make -j"$(nproc)" && make install
       - run: dotnet publish src/Kakudai.Desktop -c Release -r linux-x64 --self-contained true -o out/Kakudai
       - name: Pack
         run: |
-          cp -L lame-3.100/install/lib/libmp3lame.so.0 out/Kakudai/
+          cp -L "$RUNNER_TEMP/lame/lib/libmp3lame.so.0" out/Kakudai/
           cp packaging/linux/kakudai.desktop packaging/linux/install.sh out/Kakudai/
           chmod +x out/Kakudai/Kakudai out/Kakudai/install.sh
           tar czf Kakudai-linux-x64.tar.gz -C out Kakudai
@@ -90,6 +90,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: macos-latest
     strategy:
+      fail-fast: false
       matrix:
         rid: [osx-arm64, osx-x64]
     steps:
@@ -105,15 +106,16 @@ jobs:
           cd lame-3.100
           # 3.100 exports a symbol that no longer exists; the macOS linker refuses it.
           sed -i '' '/lame_init_old/d' include/libmp3lame.sym
-          # Several -arch: clang refuses -E, so the preprocessor is given on its own.
+          # Several -arch: clang refuses -E, so the preprocessor is given on its own. Installed outside the sources:
+          # on a case-insensitive disk an "install" folder there would be the INSTALL file.
           CC="clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0" CPP="clang -E" ./configure --disable-frontend --disable-static \
-            --enable-shared --disable-dependency-tracking --prefix="$PWD/install"
+            --enable-shared --disable-dependency-tracking --prefix="$RUNNER_TEMP/lame"
           make -j"$(sysctl -n hw.ncpu)" && make install
       - run: dotnet publish src/Kakudai.Desktop -c Release -r ${{ matrix.rid }} --self-contained true -o out/publish
       - name: Kakudai.app
         run: |
           VERSION=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' src/Kakudai.Desktop/Kakudai.Desktop.csproj)
-          cp lame-3.100/install/lib/libmp3lame.0.dylib out/publish/
+          cp "$RUNNER_TEMP/lame/lib/libmp3lame.0.dylib" out/publish/
           packaging/macos/make-app.sh out/publish "$VERSION" out/Kakudai.app
           ditto -c -k --keepParent out/Kakudai.app "Kakudai-macos-${{ matrix.rid == 'osx-arm64' && 'arm64' || 'x64' }}.zip"
       - uses: actions/upload-artifact@v4
