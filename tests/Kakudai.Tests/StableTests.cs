@@ -265,7 +265,7 @@ public class StableTests
         Assert.That(StableGame.FindLoader(null), Is.EqualTo("wine"));
     }
 
-    [Test, Platform("Linux,MacOsX")]
+    [Test, Platform("Linux")] // macOS file systems ignore case: nothing to resolve there
     public void Wine_DriveLettersGoThroughTheDosdevicesOfThePrefix()
     {
         var prefix = Path.Combine(root, "prefix");
