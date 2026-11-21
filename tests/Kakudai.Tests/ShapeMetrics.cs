@@ -105,7 +105,7 @@ internal static class ShapeMetrics
     /// <summary>
     /// How much the turning angles changed, in degrees: for every two consecutive moves (spinners excluded) both at
     /// least <see cref="MinTurnMove"/> long in the original map, |Δ(turning angle)| between the original and the new
-    /// moves. <c>Stream</c> holds the turns whose two moves are both stream gaps (≤ 1.15·beat/4).
+    /// moves. <c>Stream</c> holds the turns whose two moves are both stream gaps (<see cref="IsStreamGap"/>).
     /// </summary>
     public static (List<double> All, List<double> Stream) TurnErrors(IReadOnlyList<MapObject> objects,
         Func<double, double> beatLengthAt, Layout layout)
@@ -124,9 +124,7 @@ internal static class ShapeMetrics
 
             double d = Math.Abs(Wrap(Angle(a1, b1) - Angle(a0, b0))) * 180 / Math.PI;
             all.Add(d);
-            double gap = StreamGapInBeats * beatLengthAt(objects[i].StartTime);
-            if (objects[i].StartTime - objects[i - 1].EndTime <= gap
-                && objects[i - 1].StartTime - objects[i - 2].EndTime <= gap)
+            if (IsStreamGap(objects, beatLengthAt, i) && IsStreamGap(objects, beatLengthAt, i - 1))
                 stream.Add(d);
         }
         return (all, stream);
@@ -172,8 +170,8 @@ internal static class ShapeMetrics
 
     /// <summary>
     /// Stream cuts (Kakudai 2 spec §5.1, measured locally as ruled in §13). A stream is a run of consecutive moves
-    /// whose gaps are stream gaps (≤ 1.15·beat/4, spinners excluded; moves shorter than 1 px in the original are left
-    /// out of it). A move of a stream is a cut when its new length is more than 1.5 × the median of the new lengths of
+    /// whose gaps are stream gaps (<see cref="IsStreamGap"/>, spinners excluded; moves shorter than 1 px in the
+    /// original are left out of it). A move of a stream is a cut when its new length is more than 1.5 × the median of the new lengths of
     /// its neighbours (the <see cref="LocalGaps"/> moves on each side of it and itself), while its original length was
     /// at most 1.3 × the median of their original lengths: a sudden jump against the notes around it, not a slow drift
     /// of the spacing along the stream.
@@ -201,8 +199,7 @@ internal static class ShapeMetrics
 
         for (int i = 1; i < objects.Count; i++)
         {
-            if (!HasMove(objects, i)
-                || objects[i].StartTime - objects[i - 1].EndTime > StreamGapInBeats * beatLengthAt(objects[i].StartTime))
+            if (!HasMove(objects, i) || !IsStreamGap(objects, beatLengthAt, i))
             {
                 Close();
                 continue;
@@ -245,6 +242,13 @@ internal static class ShapeMetrics
 
     private static bool HasMove(IReadOnlyList<MapObject> objects, int i)
         => i > 0 && objects[i].Kind != ObjectKind.Spinner && objects[i - 1].Kind != ObjectKind.Spinner;
+
+    /// <summary>Whether the move into object <paramref name="i"/> is a stream gap, as the Amplifier rules it: at most
+    /// 1.15·beat/4 from the end of the previous object, and not from a slider to a slider (back-to-back sliders are
+    /// slider jumps, not a stream).</summary>
+    public static bool IsStreamGap(IReadOnlyList<MapObject> objects, Func<double, double> beatLengthAt, int i)
+        => objects[i].StartTime - objects[i - 1].EndTime <= StreamGapInBeats * beatLengthAt(objects[i].StartTime)
+           && !(objects[i - 1].Kind == ObjectKind.Slider && objects[i].Kind == ObjectKind.Slider);
 
     private static int[] Segments(IReadOnlyList<MapObject> objects)
     {

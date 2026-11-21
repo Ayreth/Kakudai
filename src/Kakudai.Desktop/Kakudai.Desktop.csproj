@@ -11,7 +11,7 @@
     <AssemblyName>Kakudai</AssemblyName>
     <RootNamespace>Kakudai.Desktop</RootNamespace>
     <!-- The released version (tag vX.Y.Z), the same as Kakudai.App's: the update banner compares it with GitHub's. -->
-    <Version>2.1.0</Version>
+    <Version>2.2.0</Version>
     <ApplicationIcon>..\Kakudai.App\kakudai.ico</ApplicationIcon>
     <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
     <!-- No console window when started from a Windows test build. -->

@@ -61,6 +61,8 @@ public static class Amplifier
     /// <summary>Objects this close to the end of the previous one are stacked on it and stay so.</summary>
     private const float StackPx = 3;
 
+    /// <summary>A head that comes at most this many beats after the previous one is a step of a stream
+    /// (<see cref="IsStreamStep"/>); the moves between such objects are the stream gaps.</summary>
     private const double StreamGapInBeats = 1.15 / 4;
 
     /// <summary>A gap of at least this many beats starts a new block (and lowers the weight of the turn into it).</summary>
@@ -147,6 +149,24 @@ public static class Amplifier
     private const double PauseTurnFactor = 0.3;
     private const double ScaleWeight = 2;
     private const double OrientationWeight = 0.3;
+
+    // Slider flow (SliderTurnFactor) and relative rotation (RelativeWeight), on 300 maps of the library, k = 2 / k = 3,
+    // before → after: turn out of a slider 14.9° → 10.3° / 18.3° → 12.9° (90th percentile 50° → 35° / 63° → 44°), into
+    // one 7.3° → 4.5° / 9.4° → 5.6°, angle between two sliders less than 2 beats apart 16.1° → 12.2° / 19.2° → 14.6°,
+    // all turns 10.7° → 10.1° / 13.2° → 12.4°, overlaps 13.1 → 12.3 ‰ / 13.6 → 13.5 ‰, stream cuts 4 → 1 / 11 → 14;
+    // jumps ×1.514 → ×1.496 / ×1.691 → ×1.654. With relative weight 8 the sliders stay a bit more parallel, with a
+    // factor of 3 the jumps out of them bend less, both for less spacing. Neither applies to the blocks of a run, which
+    // have their own bends (MaxBendSteps): applied there too, they cut 17 streams at k = 3. With back-to-back sliders
+    // out of the streams too (IsStreamStep), streams measured the same way: turn out of a slider 10.3° / 13.3°, between
+    // two sliders 11.7° / 14.7°, overlaps 12.7 ‰ / 14.7 ‰, stream cuts 7 → 0 / 23 → 5, jumps ×1.509 / ×1.692.
+
+    /// <summary>The turns around a jump measured on the body of a slider (<see cref="SliderFlow"/>) weigh this many times
+    /// more than the others, outside streams: a mapper aims the jumps out of a slider along its body, and a player
+    /// follows it.</summary>
+    private const double SliderTurnFactor = 2;
+
+    /// <summary>Weight of the rotation of a block against the previous one (<see cref="RelativeCost"/>).</summary>
+    private const double RelativeWeight = 4;
     private const double RestartMoveWeight = 0.5;
     private const double PinnedCost = 50;
 
@@ -260,6 +280,13 @@ public static class Amplifier
         public bool HasLast;
         public Vector2 FirstMove;             // first internal move, original
         public bool HasFirst;
+        // Where the cursor goes along the body of a slider (length: that of its path): into the first object when it
+        // is a slider, out of the last one when it is. The turns around a jump are measured on them (SliderFlow).
+        public Vector2 EntryDir, ExitDir;
+        public bool HasEntryDir, HasExitDir;
+        public bool HasTurnOut;               // TurnOut is measured: on EntryDir, else on FirstMove
+        public bool SliderTurnIn, SliderTurnOut; // the turn is measured on a slider body (weighed SliderTurnFactor)
+        public bool AfterRun;                 // the block before it ends a run: no pattern to keep the rotation of
         public double WantedScale = 1;        // s*
         public int ScaledMoves;
 
@@ -306,8 +333,10 @@ public static class Amplifier
     {
         public int Angle;        // orientation passed on to the next block
         public Vector2 Exit;     // end of the last object
-        public Vector2 Move;     // last move, for the turn into the next jump
+        public Vector2 Move;     // last move (end of the object before the last → head of the last)
         public bool HasMove;
+        public Vector2 Flow;     // where the cursor leaves the block: the body of its last slider, else Move; the turn
+        public bool HasFlow;     // into the next jump is measured from it
         public double Cost;
         public int Parent;
         public int Choice;       // angle index of this block
@@ -849,6 +878,7 @@ public static class Amplifier
         var ranges = new List<(int, int, bool, bool)>();
         int from = -1;
         double rhythm = -1;
+        bool streamRhythm = false; // the first move of the block is a stream step (IsStreamStep)
         bool restartNext = true, pauseNext = false;
 
         for (int i = 0; i < objects.Count; i++)
@@ -879,7 +909,7 @@ public static class Amplifier
             bool split = pause
                          || (rhythm > 0 && (gap > rhythm * RhythmRatio || gap < rhythm / RhythmRatio))
                          || o.StartTime - objects[from].StartTime
-                            > ((rhythm > 0 ? IsStreamGap(rhythm, beat) : IsStreamGap(gap, beat))
+                            > ((rhythm > 0 ? streamRhythm : IsStreamStep(objects, beats, i))
                                 ? (spaceStreams ? MaxStreamBlockBeats : MaxKeptStreamBlockBeats) : MaxBlockBeats) * beat
                             + TimeSlackMs
                          || i - from + 1 > MaxBlockObjects;
@@ -892,13 +922,22 @@ public static class Amplifier
                 rhythm = -1;
             }
             else if (rhythm < 0)
-                rhythm = gap;
+                (rhythm, streamRhythm) = (gap, IsStreamStep(objects, beats, i));
         }
         if (from >= 0) ranges.Add((from, objects.Count - 1, restartNext, pauseNext));
         return ranges;
     }
 
-    private static bool IsStreamGap(double gap, double beat) => gap <= StreamGapInBeats * beat;
+    /// <summary>
+    /// Whether object <paramref name="j"/> follows the previous one at the pace of a stream: its head comes at most
+    /// <see cref="StreamGapInBeats"/> after the previous head. Measured head to head, not from the end of a slider:
+    /// short sliders every 1/3 with 1/6 between the tail and the next head are slider jumps, not a stream (a reviewer's
+    /// map, Deadlocked [Zugzwang] 0:49–0:57, was taken for one long stream, which fitted nowhere spaced out and was
+    /// left exactly in place). Between circles, both are the same.
+    /// </summary>
+    private static bool IsStreamStep(IReadOnlyList<MapObject> objects, double[] beats, int j)
+        => objects[j].StartTime - objects[j - 1].EndTime <= StreamGapInBeats * beats[j]
+           && !(objects[j - 1].Kind == ObjectKind.Slider && objects[j].Kind == ObjectKind.Slider);
 
     /// <summary>Adds the block, or, when it fits nowhere, its two halves (recursively); a single object that fits
     /// nowhere is pinned to its original spot.</summary>
@@ -1007,13 +1046,49 @@ public static class Amplifier
         if (turned != null) last = Rotate(last, Math.Cos(turned[n - 1]), Math.Sin(turned[n - 1]));
         block.EndA = block.A[n - 1] + last;
         block.EndB = block.B[n - 1];
+
+        block.HasEntryDir = SliderFlow(objects[from], out var entry, out _);
+        block.HasExitDir = SliderFlow(objects[to], out _, out var exit);
+        if (turned != null)
+        {
+            entry = Rotate(entry, Math.Cos(turned[0]), Math.Sin(turned[0]));
+            exit = Rotate(exit, Math.Cos(turned[n - 1]), Math.Sin(turned[n - 1]));
+        }
+        (block.EntryDir, block.ExitDir) = (entry, exit);
+    }
+
+    /// <summary>Samples of a slider path the tangents at its ends are taken over (of 32 steps): an eighth of it.</summary>
+    private const int TangentSteps = 4;
+
+    /// <summary>
+    /// Where the cursor goes along the body of a slider, as vectors as long as its path: <paramref name="entry"/>, the
+    /// direction it starts in from the head; <paramref name="exit"/>, the direction it leaves the end in (the tangent at
+    /// the tail, or back toward the head after an odd number of repeats). A mapper builds the flow around these, not
+    /// around the head-to-head moves: a jump out of a slider turns from the way its body goes. False for anything but a
+    /// slider whose path is at least <see cref="StackPx"/> long.
+    /// </summary>
+    private static bool SliderFlow(MapObject o, out Vector2 entry, out Vector2 exit)
+    {
+        (entry, exit) = (Vector2.Zero, Vector2.Zero);
+        var p = o.PathSamples;
+        if (o.Kind != ObjectKind.Slider || p.Count < 2) return false;
+        float length = 0;
+        for (int i = 1; i < p.Count; i++) length += Vector2.Distance(p[i - 1], p[i]);
+        int m = p.Count - 1, step = Math.Min(TangentSteps, m);
+        var start = p[step] - p[0];
+        var end = p[m] - p[m - step];
+        if (length < StackPx || start.LengthSquared() < 1e-6f || end.LengthSquared() < 1e-6f) return false;
+        bool forward = Vector2.Distance(o.End, o.Start + p[m]) <= Vector2.Distance(o.End, o.Start);
+        entry = Vector2.Normalize(start) * length;
+        exit = Vector2.Normalize(forward ? end : -start) * length;
+        return true;
     }
 
     /// <summary>Whether the move into object <paramref name="j"/> is zoomed: not a stack, and not a stream gap when
     /// streams keep their spacing.</summary>
     private static bool Zoomed(IReadOnlyList<MapObject> objects, double[] beats, bool spaceStreams, int j, float length)
         => length >= StackPx
-           && (spaceStreams || !IsStreamGap(objects[j].StartTime - objects[j - 1].EndTime, beats[j]));
+           && (spaceStreams || !IsStreamStep(objects, beats, j));
 
     /// <summary>
     /// For every rotation θ and zoom s, the box of the positions of the first head that keep every head in
@@ -1130,7 +1205,7 @@ public static class Amplifier
         List<Block> blocks)
     {
         Vector2 previousMove = Vector2.Zero;
-        bool hasPrevious = false;
+        bool hasPrevious = false, fromSlider = false;
         foreach (var block in blocks)
         {
             if (block.Spinner)
@@ -1145,7 +1220,7 @@ public static class Amplifier
                 block.Jump = objects[f].Start - objects[f - 1].End;
                 float length = block.Jump.Length();
                 block.JumpUnit = length > 0 ? block.Jump / length : Vector2.Zero;
-                bool zoomed = spaceStreams || !IsStreamGap(objects[f].StartTime - objects[f - 1].EndTime, beats[f]);
+                bool zoomed = spaceStreams || !IsStreamStep(objects, beats, f);
                 block.WantedJump = length < StackPx || !zoomed ? length : Grow(length, k);
                 block.MoveBefore = previousMove;
                 block.HasMoveBefore = hasPrevious && previousMove.Length() > 1;
@@ -1156,18 +1231,24 @@ public static class Amplifier
                     block.TurnIn = Angle(block.MoveBefore, block.Jump);
                     block.TurnInWeight = TurnWeight * (block.Pause ? PauseTurnFactor : 1)
                                          * TurnImportance(block.MoveBefore.Length()) * importance;
+                    block.SliderTurnIn = fromSlider;
                 }
-                if (block.HasFirst)
+                // Out of the jump: along the body of a slider when the block starts with one, else its first move.
+                block.HasTurnOut = block.HasEntryDir || block.HasFirst;
+                if (block.HasTurnOut)
                 {
-                    block.TurnOut = Angle(block.Jump, block.FirstMove);
-                    block.TurnOutWeight = TurnWeight * importance * TurnImportance(block.FirstMove.Length());
-                    block.FirstMoveAngle = Math.Atan2(block.FirstMove.Y, block.FirstMove.X);
+                    var after = block.HasEntryDir ? block.EntryDir : block.FirstMove;
+                    block.TurnOut = Angle(block.Jump, after);
+                    block.TurnOutWeight = TurnWeight * importance * TurnImportance(after.Length());
+                    block.SliderTurnOut = block.HasEntryDir;
+                    block.FirstMoveAngle = Math.Atan2(after.Y, after.X);
                 }
             }
 
-            var last = block.HasLast ? block.LastA + block.LastB : block.Jump;
-            previousMove = last;
-            hasPrevious = block.HasLast || !block.Restart;
+            // Into the next jump: along the body of the last object when it is a slider, else the last move.
+            previousMove = block.HasExitDir ? block.ExitDir : block.HasLast ? block.LastA + block.LastB : block.Jump;
+            hasPrevious = block.HasExitDir || block.HasLast || !block.Restart;
+            fromSlider = block.HasExitDir;
         }
     }
 
@@ -1181,6 +1262,8 @@ public static class Amplifier
         List<Block> blocks)
     {
         Chain(objects, beats, k, spaceStreams, blocks);
+        for (int b = 1; b < blocks.Count; b++)
+            blocks[b].AfterRun = blocks[b - 1].Run >= 0 && blocks[b].Run < 0;
         for (int b = 0; b < blocks.Count; b++)
         {
             if (!blocks[b].RunHead) continue;
@@ -1242,7 +1325,7 @@ public static class Amplifier
             var (previous, block) = (blocks[b - 1], blocks[b]);
             int f = block.From;
             if (block.Spinner || previous.Spinner || block.Restart
-                || !IsStreamGap(objects[f].StartTime - objects[f - 1].EndTime, beats[f]))
+                || !IsStreamStep(objects, beats, f))
                 continue;
             float length = block.Jump.Length();
             if (medians[f] > 0 && length <= ChainRatio * medians[f])
@@ -1302,7 +1385,7 @@ public static class Amplifier
         for (int i = 1; i < objects.Count; i++)
         {
             if (objects[i].Kind == ObjectKind.Spinner || objects[i - 1].Kind == ObjectKind.Spinner
-                || !IsStreamGap(objects[i].StartTime - objects[i - 1].EndTime, beats[i]))
+                || !IsStreamStep(objects, beats, i))
             {
                 Close(i);
                 continue;
@@ -1447,7 +1530,7 @@ public static class Amplifier
         if (objects[j].Kind == ObjectKind.Spinner || objects[j - 1].Kind == ObjectKind.Spinner) return false;
         double gap = objects[j].StartTime - objects[j - 1].EndTime;
         return Vector2.Distance(objects[j].Start, objects[j - 1].End) >= AccentMovePx
-               && !IsStreamGap(gap, beats[j]) && gap < RestartBeats * beats[j];
+               && !IsStreamStep(objects, beats, j) && gap < RestartBeats * beats[j];
     }
 
     /// <summary>
@@ -1621,6 +1704,7 @@ public static class Amplifier
     private static bool SamePlace(in State a, in State b)
         => a.Choice == b.Choice && a.Head == b.Head && a.Fraction == b.Fraction && a.Pinned == b.Pinned
            && a.Angle == b.Angle && a.Exit == b.Exit && a.Move == b.Move && a.HasMove == b.HasMove
+           && a.Flow == b.Flow && a.HasFlow == b.HasFlow
            && a.Group == b.Group && a.Recent == b.Recent;
 
     /// <summary>Every candidate placement of <paramref name="block"/> after the state <paramref name="st"/>.</summary>
@@ -1644,7 +1728,7 @@ public static class Amplifier
         }
 
         var original = objects[block.From].Start;
-        double moveAngle = st.HasMove ? Math.Atan2(st.Move.Y, st.Move.X) : 0;
+        double moveAngle = st.HasFlow ? Math.Atan2(st.Flow.Y, st.Flow.X) : 0;
 
         // After the first block of a run, a block entered by a jump inside the stream follows its run.
         if (block.Run >= 0 && !block.RunHead)
@@ -1693,7 +1777,7 @@ public static class Amplifier
             fits = true; // "if nothing fits" is decided on the boxes alone, before any pruning
 
             // Every cost below is ≥ 0: a candidate that starts above the bound can never be kept.
-            double orientation = block.Orientation[t];
+            double orientation = block.Orientation[t] + RelativeCost(block, st, t);
             double reach = 0; // the bound of the beams this state can reach
             for (int f = 0; f < fractions; f++)
                 if (targets[f].Length > 0) reach = Math.Max(reach, BoundOf(output, targets[f]));
@@ -1847,6 +1931,20 @@ public static class Amplifier
     /// <summary>Cosine and sine of every half angle step (2.5°): the direction of the entry gap of a chained block,
     /// turned by half its bend.</summary>
     private static readonly double[] HalfCos = new double[2 * AngleSteps], HalfSin = new double[2 * AngleSteps];
+
+    /// <summary>
+    /// The cost RelativeWeight·(Δ/π)² of turning a block by <paramref name="t"/> after a block turned by the state's
+    /// angle: Δ is how much the two patterns turn against each other (beyond the shift the accents ask for). Two sliders
+    /// drawn parallel, or a pattern and its copy turned by some θ, keep that relation instead of each one turning its
+    /// own way. None after a restart, nor in a run or right after one: a stream bends at its own pace
+    /// (<see cref="MaxBendSteps"/>), and its last block is turned by those bends, not as a pattern.
+    /// </summary>
+    private static double RelativeCost(Block block, in State st, int t)
+    {
+        if (block.Restart || block.Run >= 0 || block.AfterRun) return 0;
+        double a = Wrap(Angles[t] - Angles[st.Angle] - block.Shift * 2 * Math.PI / AngleSteps) / Math.PI;
+        return RelativeWeight * a * a;
+    }
 
     /// <summary>The cost BendWeight·(β/π)² of a bend of <paramref name="bend"/> angle steps.</summary>
     private static double BendCost(int bend)
@@ -2127,9 +2225,12 @@ public static class Amplifier
             hasMove = false;
         }
 
+        hasMove &= move.LengthSquared() > 1;
+        var flow = block.HasExitDir ? Rotate(block.ExitDir, c, s) : move;
         return new State
         {
-            Angle = pinned ? 0 : t, Exit = exit, Move = move, HasMove = hasMove && move.LengthSquared() > 1,
+            Angle = pinned ? 0 : t, Exit = exit, Move = move, HasMove = hasMove,
+            Flow = flow, HasFlow = block.HasExitDir || hasMove,
             Cost = cost, Parent = si, Choice = t, Fraction = f, Scale = scale, Head = head, Moved = moved,
             Short = isShort, Pinned = pinned, LastHead = head + Rotate(block.A[^1] + scale * block.B[^1], c, s),
         };
@@ -2171,15 +2272,16 @@ public static class Amplifier
         if (v.Length() <= 1 || block.Jump.Length() <= 1) return 0;
         double cost = 0;
         double jumpAngle = Math.Atan2(v.Y, v.X);
-        if (st.HasMove && block.HasMoveBefore)
+        bool pattern = block.Run < 0; // in a stream, a slider turn weighs like the others
+        if (st.HasFlow && block.HasMoveBefore)
         {
             double d = Wrap(jumpAngle - moveAngle - block.TurnIn) / Math.PI;
-            cost += block.TurnInWeight * d * d;
+            cost += block.TurnInWeight * (pattern && block.SliderTurnIn ? SliderTurnFactor : 1) * d * d;
         }
-        if (block.HasFirst)
+        if (block.HasTurnOut)
         {
             double d = Wrap(block.FirstMoveAngle + angle - jumpAngle - block.TurnOut) / Math.PI;
-            cost += block.TurnOutWeight * d * d;
+            cost += block.TurnOutWeight * (pattern && block.SliderTurnOut ? SliderTurnFactor : 1) * d * d;
         }
         return cost;
     }

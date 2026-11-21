@@ -533,6 +533,66 @@ public class AmplifierTests
         });
     }
 
+    [Test]
+    public void SliderJumps_KeepTheirAnglesToTheBodies()
+    {
+        // Parallel sliders 80 px long, in pairs (gaps of 150 then 300 ms: a block of two, then a jump), on a zigzag:
+        // each jump leaves the end of a body at about 97° from it. At ×3 the 160 px jumps want about 390 px, more than
+        // the playfield is high: the zigzag has to turn. The jumps out of a slider must keep their angle to its body,
+        // and the sliders stay nearly parallel, as a mapper drew them (a reviewer's report: "really loose with the
+        // angles, especially with sliders").
+        var objects = new MapObject[7];
+        double time = 0;
+        for (int i = 0; i < objects.Length; i++)
+        {
+            objects[i] = StraightSlider(40 + 60 * i, i % 2 == 0 ? 110 : 270, time, time + 100, new Vector2(80, 0));
+            time += 100 + (i % 2 == 0 ? 150 : 300);
+        }
+
+        var result = Amplify(3, objects);
+        var layout = Layout.From(objects, result.Placements);
+        var body = Rotate(new Vector2(80, 0), result.Placements[0].Rotation);
+        var outTurns = Enumerable.Range(0, objects.Length - 1).Select(i => Math.Abs(
+            TurnDegrees(layout.Ends[i] - layout.Starts[i], layout.Starts[i + 1] - layout.Ends[i])
+            - TurnDegrees(objects[i].End - objects[i].Start, objects[i + 1].Start - objects[i].End))).ToArray();
+        var parallel = result.Placements.Select(p => Math.Abs(TurnDegrees(body, Rotate(new Vector2(80, 0), p.Rotation))))
+            .ToArray();
+        TestContext.Out.WriteLine($"virages faussés {string.Join(" ", outTurns.Select(t => t.ToString("0")))}, "
+                                  + $"écart au parallèle {string.Join(" ", parallel.Select(t => t.ToString("0")))}, "
+                                  + $"sauts ×{result.AverageJumpAfter / result.AverageJumpBefore:0.00}");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(result.AverageJumpAfter / result.AverageJumpBefore, Is.GreaterThan(1.3), "espacé");
+            Assert.That(outTurns.Max(), Is.LessThanOrEqualTo(20), "angle entre corps et saut");
+            Assert.That(parallel.Max(), Is.LessThanOrEqualTo(20), "sliders parallèles");
+        });
+    }
+
+    [Test]
+    public void BackToBackSliders_AreNotAStream()
+    {
+        // Short sliders every 1/3 beat, 1/6 from a tail to the next head, jumping 100 to 200 px (a reviewer's map,
+        // Deadlocked [Zugzwang] 0:49–0:57). Timed from the tails they looked like a stream: one long run, there left
+        // exactly in place because no stream zoom fitted its jumps. Back-to-back sliders are slider jumps: with the
+        // streams crushed (their spacing kept), these jumps still grow; a slider into a circle at 1/6 stays a stream gap.
+        Vector2[] heads = [new(100, 100), new(300, 80), new(200, 260), new(380, 300), new(120, 300), new(260, 140),
+            new(420, 120), new(160, 180), new(330, 240), new(90, 220), new(280, 320), new(400, 200)];
+        var sliders = heads.Select((h, i) => StraightSlider(h.X, h.Y, i * 500.0 / 3, i * 500.0 / 3 + 500.0 / 6,
+            new Vector2(i % 2 == 0 ? 30 : -30, 20))).ToArray();
+        MapObject[] intoCircle = [sliders[0], Circle(200, 200, 500.0 / 3)];
+
+        var jumps = Amplifier.Amplify(sliders, Beat500, new AmplifyOptions(2, SpaceStreams: false));
+        var gap = Amplifier.Amplify(intoCircle, Beat500, new AmplifyOptions(2, SpaceStreams: false));
+        TestContext.Out.WriteLine($"sauts ×{jumps.AverageJumpAfter / jumps.AverageJumpBefore:0.00}");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(jumps.AverageJumpAfter / jumps.AverageJumpBefore, Is.GreaterThan(1.3), "slider jumps espacés");
+            Assert.That(gap.AverageJumpAfter, Is.EqualTo(gap.AverageJumpBefore).Within(0.01), "écart de stream gardé");
+        });
+    }
+
     [TestCase(false)]
     [TestCase(true)]
     public void KiaiOnly_IsIdentityOnMapWithoutKiai(bool accentAngles)
